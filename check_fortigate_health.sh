@@ -7,6 +7,16 @@
 #
 # Version history:
 # 2026-06-01 Felix Longardt <monitoring@longardt.com>
+# Release: 1.4.39
+#   Resources: add --warn-sessions-pct/--crit-sessions-pct (default 80/90%) to
+#     alert when sessions/session_limit exceeds threshold; requires REST API
+#     (session_limit from /monitor/firewall/session/full-stat); adds
+#     session_usage_pct perfdata with warn/crit levels; existing
+#     --warn-sessions/--crit-sessions (absolute count) unchanged
+# Release: 1.4.38
+#   IPAM: add --warn-ipam-usage/--crit-ipam-usage thresholds (default 80/90%)
+#     for usage% (allocated/total); perfdata ipam_usage_pct now includes
+#     warn/crit levels; output reflects WARN/CRIT state when exceeded
 # Release: 1.4.37
 #   IPAM: add allocated_subnet_size extraction, usage% (allocated/total),
 #     per-pool subnet listing in verbose mode; new perfdata metrics:
@@ -451,7 +461,7 @@
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="1.4.37"
+REVISION="1.4.39"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -594,6 +604,8 @@ Options:
     System info: model, serial, hostname, FortiOS version, uptime, HA role
  -eRes,     --enable-resources
     Resource usage: CPU%, memory%, sessions, setup rate (thresholds: -wCPU/-cCPU, -wMem/-cMem)
+    Session count: --warn-sessions/--crit-sessions (default -1=disabled, absolute count)
+    Session limit %: --warn-sessions-pct/--crit-sessions-pct (default 80/90%, vs hardware session_limit)
  -eHA,      --enable-ha
     HA cluster: mode, member count, roles
  -eNI,      --enable-interfaces
@@ -618,7 +630,8 @@ Options:
     DHCP pool usage per server (pool size via ip-range, active leases); --warn/crit-dhcp-usage (%)
     Exclude specific pools: --exclude-dhcp "iface1,iface2"
  -eIPAM,    --enable-ipam
-    FortiIPAM status: enabled/disabled, server type, pool/rule counts, available subnets
+    FortiIPAM status: enabled/disabled, server type, pool/rule counts, allocated/available subnets,
+    usage%; thresholds: --warn-ipam-usage/--crit-ipam-usage (default 80/90%)
  -eVDOM,    --enable-vdom
     Per-VDOM resource usage: cpu, memory, sessions; thresholds: --warn/crit-vdom-cpu (default 80/90)
     --warn/crit-vdom-mem (default 80/90) --warn/crit-vdom-sessions (default -1/-1)
@@ -1054,6 +1067,14 @@ while [[ -n "${1}" ]]; do
 		shift
 		crit_sessions="${1}"
 		;;
+	--warn-sessions-pct)
+		shift
+		warn_sessions_pct="${1}"
+		;;
+	--crit-sessions-pct)
+		shift
+		crit_sessions_pct="${1}"
+		;;
 	--warn-vpn-down)
 		shift
 		warn_vpn_down="${1}"
@@ -1088,6 +1109,14 @@ while [[ -n "${1}" ]]; do
 	--crit-dhcp-usage)
 		shift
 		crit_dhcp_usage="${1}"
+		;;
+	--warn-ipam-usage)
+		shift
+		warn_ipam_usage="${1}"
+		;;
+	--crit-ipam-usage)
+		shift
+		crit_ipam_usage="${1}"
 		;;
 	--exclude-dhcp)
 		shift
@@ -1292,8 +1321,10 @@ done
 [[ -z "${snmp_32bit_counters}" ]] && snmp_32bit_counters=""
 [[ -z "${warn_disk}" ]]     && warn_disk=80
 [[ -z "${crit_disk}" ]]     && crit_disk=90
-[[ -z "${warn_sessions}" ]] && warn_sessions=-1
-[[ -z "${crit_sessions}" ]] && crit_sessions=-1
+[[ -z "${warn_sessions}" ]]     && warn_sessions=-1
+[[ -z "${crit_sessions}" ]]     && crit_sessions=-1
+[[ -z "${warn_sessions_pct}" ]] && warn_sessions_pct=80
+[[ -z "${crit_sessions_pct}" ]] && crit_sessions_pct=90
 [[ -z "${warn_vpn_down}" ]] && warn_vpn_down=-1
 [[ -z "${crit_vpn_down}" ]] && crit_vpn_down=1
 [[ -z "${check_policy_cleanup}" ]] && check_policy_cleanup=""
@@ -1303,6 +1334,8 @@ done
 [[ -z "${crit_ap_clients}" ]]   && crit_ap_clients=-1
 [[ -z "${warn_dhcp_usage}" ]]   && warn_dhcp_usage=85
 [[ -z "${crit_dhcp_usage}" ]]   && crit_dhcp_usage=90
+[[ -z "${warn_ipam_usage}" ]]   && warn_ipam_usage=80
+[[ -z "${crit_ipam_usage}" ]]   && crit_ipam_usage=90
 [[ -z "${dhcp_exclude}" ]]      && dhcp_exclude=""
 [[ -z "${warn_utm_update}" ]]   && warn_utm_update=30
 [[ -z "${crit_utm_update}" ]]   && crit_utm_update=60
@@ -1941,14 +1974,35 @@ if [[ ( -n "${enable_res}" || -n "${enable_all}" ) && -z "${disable_res}" ]]; th
 			_sess_icmp=$(echo "${_sess_buf}" | "${JQ}" --unbuffered -r '.results.icmp  // ""' 2>/dev/null)
 			_sess_tcp6=$(echo "${_sess_buf}" | "${JQ}" --unbuffered -r '.results.tcp6  // ""' 2>/dev/null)
 			_sess_other=$(echo "${_sess_buf}"| "${JQ}" --unbuffered -r '.results.others // ""' 2>/dev/null)
+
+			# Session limit usage %
+			_sess_pct=0
+			if [[ "${_sess_max}" =~ ^[0-9]+$ && "${_sess_max}" -gt 0 ]]; then
+				_sess_cur="${_sess_total}"
+				[[ ! "${_sess_cur}" =~ ^[0-9]+$ ]] && _sess_cur="${_sessions}"
+				[[ "${_sess_cur}" =~ ^[0-9]+$ ]] && \
+					_sess_pct=$(( _sess_cur * 100 / _sess_max ))
+				if (( _sess_pct >= crit_sessions_pct )) 2>/dev/null; then
+					_sess_state="${status_crit}"
+					fg_problem_output+="${status_crit} - ${fg_hostname}: Sessions CRITICAL: ${_sess_cur}/${_sess_max} (${_sess_pct}%, threshold: ${crit_sessions_pct}%)\n"
+				elif (( _sess_pct >= warn_sessions_pct )) 2>/dev/null; then
+					_sess_state="${status_warn}"
+					fg_problem_output+="${status_warn} - ${fg_hostname}: Sessions WARNING: ${_sess_cur}/${_sess_max} (${_sess_pct}%, threshold: ${warn_sessions_pct}%)\n"
+				fi
+			fi
+
 			if [[ -n "${verbose}" ]]; then
 				_sdet=""
 				[[ -n "${_sess_total}" && "${_sess_total}" != "null" ]] && _sdet+=" | Total: ${_sess_total}"
-				[[ -n "${_sess_max}" && "${_sess_max}" != "null" ]] && _sdet+=" | Limit: ${_sess_max}"
+				if [[ "${_sess_max}" =~ ^[0-9]+$ && "${_sess_max}" -gt 0 ]]; then
+					_sdet+=" | Limit: ${_sess_max} (${_sess_pct}%)"
+				elif [[ -n "${_sess_max}" && "${_sess_max}" != "null" ]]; then
+					_sdet+=" | Limit: ${_sess_max}"
+				fi
 				[[ -n "${_sess_clash}" && "${_sess_clash}" != "0" && "${_sess_clash}" != "null" ]] && \
 					_sdet+=" | Clashes: ${_sess_clash}"
 				[[ -n "${_sdet}" ]] && \
-					fg_output+="${status_ok} - ${fg_hostname}: Session detail${_sdet}\n"
+					fg_output+="${_sess_state} - ${fg_hostname}: Session detail${_sdet}\n"
 				_sproto=""
 				[[ -n "${_sess_tcp}"  && "${_sess_tcp}"  != "null" ]] && _sproto+=" | TCP: ${_sess_tcp}"
 				[[ -n "${_sess_udp}"  && "${_sess_udp}"  != "null" ]] && _sproto+=" | UDP: ${_sess_udp}"
@@ -1962,6 +2016,8 @@ if [[ ( -n "${enable_res}" || -n "${enable_all}" ) && -z "${disable_res}" ]]; th
 			fi
 			[[ -n "${_sess_max}" && "${_sess_max}" != "null" ]] && \
 				fg_perf+=" session_limit=${_sess_max}"
+			[[ "${_sess_pct}" =~ ^[0-9]+$ && "${_sess_max}" =~ ^[0-9]+$ && "${_sess_max}" -gt 0 ]] && \
+				fg_perf+=" session_usage_pct=${_sess_pct};${warn_sessions_pct};${crit_sessions_pct};0;100"
 			[[ -n "${_sess_tcp}"  && "${_sess_tcp}"  =~ ^[0-9]+$ ]] && fg_perf+=" sessions_tcp=${_sess_tcp}"
 			[[ -n "${_sess_udp}"  && "${_sess_udp}"  =~ ^[0-9]+$ ]] && fg_perf+=" sessions_udp=${_sess_udp}"
 			[[ -n "${_sess_icmp}" && "${_sess_icmp}" =~ ^[0-9]+$ ]] && fg_perf+=" sessions_icmp=${_sess_icmp}"
@@ -3033,26 +3089,34 @@ if [[ ( -n "${enable_ipam}" || -n "${enable_all}" ) && -z "${disable_ipam}" ]]; 
 		fi
 
 		if [[ "${_ipam_enabled}" == "enabled" || "${_ipam_enabled}" == "enable" ]]; then
+			_ipam_state="${status_ok}"
 			_ipam_detail=""
 			[[ -n "${_ipam_type}" ]] && _ipam_detail+=" | type: ${_ipam_type}"
 			[[ "${_ipam_pools}" =~ ^[0-9]+$ && "${_ipam_pools}" -gt 0 ]] && _ipam_detail+=" | pools: ${_ipam_pools}"
 			[[ "${_ipam_rules}" =~ ^[0-9]+$ && "${_ipam_rules}" -gt 0 ]] && _ipam_detail+=" | rules: ${_ipam_rules}"
 			if [[ "${_ipam_total}" -gt 0 ]]; then
 				_ipam_detail+=" | allocated: ${_ipam_alloc}/${_ipam_total} (${_ipam_usage_pct}%) | available: ${_ipam_avail}"
+				if (( _ipam_usage_pct >= crit_ipam_usage )) 2>/dev/null; then
+					_ipam_state="${status_crit}"
+					fg_problem_output+="${status_crit} - IPAM ${fg_hostname}: usage ${_ipam_usage_pct}% CRITICAL (threshold: ${crit_ipam_usage}%)${_ipam_detail}\n"
+				elif (( _ipam_usage_pct >= warn_ipam_usage )) 2>/dev/null; then
+					_ipam_state="${status_warn}"
+					fg_problem_output+="${status_warn} - IPAM ${fg_hostname}: usage ${_ipam_usage_pct}% WARNING (threshold: ${warn_ipam_usage}%)${_ipam_detail}\n"
+				fi
 			elif [[ "${_ipam_avail}" =~ ^[0-9]+$ ]]; then
 				_ipam_detail+=" | available subnets: ${_ipam_avail}"
 			fi
-			fg_output+="${status_ok} - IPAM ${fg_hostname}: enabled${_ipam_detail}\n"
+			fg_output+="${_ipam_state} - IPAM ${fg_hostname}: enabled${_ipam_detail}\n"
 			if [[ -n "${verbose}" && "${#_ipam_pool_subnets[@]}" -gt 0 ]]; then
 				for _ps in "${_ipam_pool_subnets[@]}"; do
-					fg_output+="${status_ok} - IPAM ${fg_hostname}: pool ${_ps}\n"
+					fg_output+="${_ipam_state} - IPAM ${fg_hostname}: pool ${_ps}\n"
 				done
 			fi
 			[[ "${_ipam_pools}"     =~ ^[0-9]+$ ]] && fg_perf+=" ipam_pools=${_ipam_pools}"
 			[[ "${_ipam_alloc}"     =~ ^[0-9]+$ ]] && fg_perf+=" ipam_allocated_subnets=${_ipam_alloc}"
 			[[ "${_ipam_avail}"     =~ ^[0-9]+$ ]] && fg_perf+=" ipam_available_subnets=${_ipam_avail}"
 			[[ "${_ipam_total}"     -gt 0        ]] && fg_perf+=" ipam_total_subnets=${_ipam_total}"
-			[[ "${_ipam_usage_pct}" =~ ^[0-9]+$  ]] && fg_perf+=" ipam_usage_pct=${_ipam_usage_pct};0;100"
+			[[ "${_ipam_usage_pct}" =~ ^[0-9]+$  ]] && fg_perf+=" ipam_usage_pct=${_ipam_usage_pct};${warn_ipam_usage};${crit_ipam_usage};0;100"
 		else
 			[[ -n "${verbose}" ]] && fg_output+="${status_ok} - IPAM ${fg_hostname}: disabled\n"
 		fi
