@@ -6,12 +6,42 @@
 #   Felix Longardt <monitoring@longardt.com>
 #
 # Version history:
-# 2026-05-31 Felix Longardt <monitoring@longardt.com>
+# 2026-06-01 Felix Longardt <monitoring@longardt.com>
+# Release: 1.4.37
+#   IPAM: add allocated_subnet_size extraction, usage% (allocated/total),
+#     per-pool subnet listing in verbose mode; new perfdata metrics:
+#     ipam_allocated_subnets, ipam_total_subnets, ipam_usage_pct
+# Release: 1.4.36
+#   Logwatch: add srcip:srcport -> dstip:dstport and policy ID to log entry
+#     output; fields are omitted when absent (0/empty) so event/system log
+#     lines are not cluttered with empty connection info
+# Release: 1.4.35
+#   Logwatch: fix case-sensitive action matching - jq filter now lowercases both
+#     sides via ascii_downcase so "Block"/"block"/"BLOCK" all match equally;
+#     verbose + filter mode: always show matched lines regardless of threshold
+#     so -v can be used to inspect log content without hitting warn/crit counts
+# Release: 1.4.34
+#   -eSD: switch from global -w/-c to dedicated --warn-disk/--crit-disk thresholds
+#     (default 80/90%) for both partition storage and log disk checks; add
+#     --warn-disk/--crit-disk to help text; add SNMP fallback using
+#     OID_DISK/OID_DISK_CAP (fgSysDiskUsage/fgSysDiskCapacity) when REST API
+#     is not available
+# Release: 1.4.33
+#   SNMP: snmpwalk -Ovq keeps surrounding double quotes on STRING values; strip
+#     them via tr -d '"' on OID_IF_NAME, OID_IF_ALIAS, OID_VPN_NAME so that
+#     tunnel names are displayed correctly and blacklist/ifup/ifdown lookups
+#     against user-supplied names match correctly
+# Release: 1.4.32
+#   SNMP NI path: fix --ifdown not being applied in SNMP-only mode; _ni_expect_down
+#     was declared but never populated from ni_ifdown; up interfaces were never
+#     checked against _ni_expect_down; summary line now shows checked count when
+#     --ifup/--ifdown are in use, matching the REST API path behavior
 # Release: 1.4.31
 #   Fix opt-out mode: enable_sdwan/ftk/utm/vdom/ap/sw/fex/dhcp/ipam/logwatch/
-#     firmware/sensors/fwstats/ntp/uptime were missing from the "no flags set →
+#     firmware/sensors/fwstats/ntp/uptime were missing from the "no flags set ->
 #     enable all" condition; using -eSDWAN (or any of those flags) alone would
 #     incorrectly activate all checks instead of just the requested one
+# 2026-05-31 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.30
 #   SD-WAN: add --crit-sdwan-latency threshold (default -1 = disabled); latency
 #     now checks critical before warning, matching packet-loss behavior
@@ -27,8 +57,8 @@
 # Release: 1.4.28
 #   Logwatch: --logwatch-type now accepts a comma-separated list (e.g. "ips,anomaly")
 #     and defaults to ALL supported types for the selected device when omitted:
-#     disk → event,traffic,app-ctrl,ips,virus,webfilter,anomaly,dns,voip,dlp
-#     memory → app-ctrl,ips,virus,webfilter,anomaly,dns,voip,dlp
+#     disk -> event,traffic,app-ctrl,ips,virus,webfilter,anomaly,dns,voip,dlp
+#     memory -> app-ctrl,ips,virus,webfilter,anomaly,dns,voip,dlp
 #     each type is prefetched in parallel into logwatch_<type>.json and results
 #     are aggregated; --logwatch-subtype filter only applied to event/traffic types;
 #     types that return 404 are skipped and noted in verbose output
@@ -36,7 +66,7 @@
 # 2026-05-30 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.27
 #   UTM: "updated: never" (even with no DB at all, version=0.00000) now treated as
-#     99999d stale — fires CRITICAL via warn/crit-utm-update regardless of license status
+#     99999d stale - fires CRITICAL via warn/crit-utm-update regardless of license status
 #   VDOM: add license usage % threshold check: --warn-vdom-license (default 80%) and
 #     --crit-vdom-license (default 90%); alerts when used/max*100 >= threshold;
 #     perfdata: vdom_used with warn/crit absolute values derived from % thresholds
@@ -45,7 +75,7 @@
 #
 # 2026-05-30 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.26
-#   UTM: "updated: never (has db)" now also fires CRITICAL — a service that has a
+#   UTM: "updated: never (has db)" now also fires CRITICAL - a service that has a
 #     db but last_update==0 is treated as 99999d stale so warn/crit thresholds apply
 #   VDOM: add per-check license usage summary "license: N/M vdoms" from
 #     /monitor/license/status .results.vdom.used/.max; prefetch vdom_lic_info.json
@@ -56,7 +86,7 @@
 #     --logwatch-device (default disk), --logwatch-rows (default 200),
 #     --logwatch-eventids "id1,id2", --logwatch-actions "a1,a2",
 #     --warn/crit-logwatch (count thresholds); level-based alerting when no
-#     id/action filter: emergency/alert/critical → CRIT, error/warning → WARN;
+#     id/action filter: emergency/alert/critical -> CRIT, error/warning -> WARN;
 #     NOT included in -A (must be enabled explicitly with -eLogwatch)
 #
 # 2026-05-30 Felix Longardt <monitoring@longardt.com>
@@ -79,7 +109,7 @@
 # Release: 1.4.24
 #   SD-WAN: add prefetch of /cmdb/system/sdwan; when health-check results are empty,
 #     check CMDB status: report "disabled" (status=disable) vs "enabled, no probes"
-#   UTM: rename --warn/crit-sig-age → --warn/crit-utm-update (old names kept as aliases);
+#   UTM: rename --warn/crit-sig-age -> --warn/crit-utm-update (old names kept as aliases);
 #     new defaults: warn=30d, crit=60d; add --ignore-utm-status to suppress
 #     no_license/expired from problem output (still shown in verbose)
 #   UTM: expand downloaded FDS services: add web_filtering, botnet_domain, geoip_db,
@@ -87,15 +117,15 @@
 #     are skipped automatically
 #   UTM: add live FortiGuard services section: antispam, outbreak_prevention
 #     (status + running flag, no age tracking)
-#   UTM: perfdata label sanitized (hyphens/dots → underscore); metric renamed
-#     utm_X_sig_age → utm_X_update_age
+#   UTM: perfdata label sanitized (hyphens/dots -> underscore); metric renamed
+#     utm_X_sig_age -> utm_X_update_age
 #
 # 2026-05-30 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.23
 #   NTP check: unreachable peers now CRITICAL (was WARNING); added to fg_problem_output
 #     always (not just verbose); track _ntp_unreachable count separately; summary line
 #     shows "N UNREACHABLE" when any peers down; summary severity is CRITICAL when any
-#     unreachable, independent of offset check; default warn_ntp_offset changed 100→300ms;
+#     unreachable, independent of offset check; default warn_ntp_offset changed 100->300ms;
 #     perfdata adds ntp_unreachable metric
 #
 # 2026-05-30 Felix Longardt <monitoring@longardt.com>
@@ -145,7 +175,7 @@
 #     device-configured green/red thresholds; script defaults (75%/80%) now always
 #     apply unless user passes --warn-mem/--crit-mem explicitly
 #   SNMP interface names: switch from ifDescr (OID .2.2.1.2) to ifName
-#     (OID .31.1.1.1.1) — FortiGate maps ifDescr to the admin alias field so the
+#     (OID .31.1.1.1.1) - FortiGate maps ifDescr to the admin alias field so the
 #     actual port names (dmz, port1, wan1) were not shown; ifAlias display unchanged
 #
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
@@ -186,7 +216,7 @@
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.15
 #   Serial number via SNMP: fetch fnSysSerial (.12356.100.1.1.1.0, FORTINET-CORE-MIB)
-#     in SNMP-only mode — "Serial: unknown" is now replaced by the actual serial
+#     in SNMP-only mode - "Serial: unknown" is now replaced by the actual serial
 #   Interface check: add --ignore-if / --ignore-interfaces as aliases for
 #     --blacklist-interfaces; add --ignore-down to suppress WARNING output for
 #     oper-down interfaces not listed in --ifup (counted in ni_down, not alerted)
@@ -199,7 +229,7 @@
 #
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.14
-#   Fix SNMP walk enum output: change -Ovq to -Ovqe in _snmp_walk — the -e flag
+#   Fix SNMP walk enum output: change -Ovq to -Ovqe in _snmp_walk - the -e flag
 #     forces INTEGER enumerations to print as numbers (1/2) even when IF-MIB is
 #     loaded; without -e, snmpwalk returns "up"/"down" instead of "1"/"2", causing
 #     ifAdminStatus and ifOperStatus comparisons to always fail: ni_up=0 always,
@@ -209,16 +239,16 @@
 # Release: 1.4.13
 #   OID table verified against official FORTINET-FORTIGATE-MIB (Fortinet, last updated 2025-10-14):
 #     All existing OIDs confirmed correct; inline comments updated with MIB field names
-#     Add OID_NPU_SES (.4.1.24.0 fgSysNpuSesCount) — NPU-offloaded session count
-#     Add OID_FREE_MEM (.4.1.36.0 fgSysFreeMemUsage) — free memory % (reserved for future use)
+#     Add OID_NPU_SES (.4.1.24.0 fgSysNpuSesCount) - NPU-offloaded session count
+#     Add OID_FREE_MEM (.4.1.36.0 fgSysFreeMemUsage) - free memory % (reserved for future use)
 #   Resource check (SNMP): fetch NPU-offloaded sessions via OID_NPU_SES;
 #     show in output when non-zero ("NPU sessions: N") and add npu_sessions perfdata
 #
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.12
-#   SNMP performance: add -t 2 -r 1 to all snmpget/snmpwalk calls — reduces per-call
+#   SNMP performance: add -t 2 -r 1 to all snmpget/snmpwalk calls - reduces per-call
 #     failure timeout from 6s to 4s (2s + 1 retry); critical when SNMP is unreachable
-#   SNMP-only mode: add connectivity pre-check — if sysName OID returns empty on the
+#   SNMP-only mode: add connectivity pre-check - if sysName OID returns empty on the
 #     very first query, disable _snmp_avail immediately (prevents N×4s timeouts on all
 #     subsequent checks) and emit a [WARNING] line; all checks degrade gracefully to
 #     "not available" instead of hanging or exiting [UNKNOWN]
@@ -236,11 +266,11 @@
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.10
 #   Fix OID table per Observium FORTINET-FORTIGATE-MIB (more complete than LibreNMS):
-#     Add OID_FG_UPTIME (.4.1.20.0 fgSysUpTime, Counter64, centiseconds) — does exist
+#     Add OID_FG_UPTIME (.4.1.20.0 fgSysUpTime, Counter64, centiseconds) - does exist
 #       in full/newer MIB; uptime SNMP path now tries this OID first, falls back to
 #       MIB-II sysUpTime (.1.3.6.1.2.1.1.3.0); both use /100 for seconds conversion
-#     Add OID_SES6 (.4.1.15.0 fgSysSes6Count) — IPv6 session count
-#     Add OID_SESRATE6 (.4.1.16.0 fgSysSes6Rate1) — IPv6 session setup rate (reference)
+#     Add OID_SES6 (.4.1.15.0 fgSysSes6Count) - IPv6 session count
+#     Add OID_SESRATE6 (.4.1.16.0 fgSysSes6Rate1) - IPv6 session setup rate (reference)
 #   Resource check (SNMP): fetch IPv6 sessions via OID_SES6; show in output when
 #     non-zero ("IPv6 sessions: N") and add sessions6 perfdata metric
 #   Resource check (SNMP): uptime display uses same dual-OID fallback as uptime check
@@ -248,12 +278,12 @@
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.9
 #   Fix OID table against FORTINET-FORTIGATE-MIB (librenms):
-#     OID_SESRATE: .9.0 was fgSysLowMemUsage (wrong) → .11.0 fgSysSesRate1 (correct)
-#     OID_FG_UPTIME removed: .13.0 is fgSysSesRate30, not uptime — MIB has no
+#     OID_SESRATE: .9.0 was fgSysLowMemUsage (wrong) -> .11.0 fgSysSesRate1 (correct)
+#     OID_FG_UPTIME removed: .13.0 is fgSysSesRate30, not uptime - MIB has no
 #       dedicated uptime OID; uptime and resource checks now use MIB-II sysUpTime only
-#     OID_VPN_STATUS: .12.2.2.1.6 was fgVpnTunEntLocGwyIp → .12.2.2.1.20 fgVpnTunEntStatus
-#     OID_VPN_IN:     .12.2.2.1.7 was fgVpnTunEntLocGwyPort → .12.2.2.1.18 fgVpnTunEntInOctets
-#     OID_VPN_OUT:    .12.2.2.1.8 was selector src IP → .12.2.2.1.19 fgVpnTunEntOutOctets
+#     OID_VPN_STATUS: .12.2.2.1.6 was fgVpnTunEntLocGwyIp -> .12.2.2.1.20 fgVpnTunEntStatus
+#     OID_VPN_IN:     .12.2.2.1.7 was fgVpnTunEntLocGwyPort -> .12.2.2.1.18 fgVpnTunEntInOctets
+#     OID_VPN_OUT:    .12.2.2.1.8 was selector src IP -> .12.2.2.1.19 fgVpnTunEntOutOctets
 #     Add OID_VPN_P2NAME (.12.2.2.1.3 fgVpnTunEntPhase2Name)
 #
 # 2026-05-29 Felix Longardt <monitoring@longardt.com>
@@ -287,7 +317,7 @@
 #   (KB); add OID_DISK_CAP, OID_FG_UPTIME, OID_FG_VERSION, OID_SYSNAME,
 #   OID_SYSDESCR; drop unused OID_MEMFREE
 #   Resource check (SNMP): disk% computed from fgSysDiskUsage/fgSysDiskCapacity;
-#   memory total (KB→MB) added to output; verbose adds disk MB/cap line;
+#   memory total (KB->MB) added to output; verbose adds disk MB/cap line;
 #   perfdata adds mem_total_kb, disk_mb; uptime prefers fgSysUpTime over sysUpTime
 #
 # 2026-05-28 Felix Longardt <monitoring@longardt.com>
@@ -299,14 +329,14 @@
 #     --snmp-priv-proto <DES|AES> privacy protocol (default: AES)
 #     --snmp-priv-pass <pass>    privacy password
 #     --snmp-sec-level <level>   override auto-detected security level
-#   Security level auto-detected from credentials: no creds → noAuthNoPriv,
-#   auth only → authNoPriv, auth+priv → authPriv
+#   Security level auto-detected from credentials: no creds -> noAuthNoPriv,
+#   auth only -> authNoPriv, auth+priv -> authPriv
 #   Global _snmp_get() defined once; v2c and v3 are mutually exclusive (v3
 #   takes priority); both can coexist with API credentials simultaneously
 #
 # 2026-05-28 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.4
-#   -eUp: fix OID_UPTIME — was .4.1.6.0 (fgSysDiskUsage), now uses standard
+#   -eUp: fix OID_UPTIME - was .4.1.6.0 (fgSysDiskUsage), now uses standard
 #         MIB-II sysUpTime (.1.3.6.1.2.1.1.3.0, TimeTicks in hundredths of
 #         seconds), which works on all FortiOS versions without Fortinet MIBs
 #   Reduce curl --max-time from 30s to 15s to avoid long blocks on slow
@@ -315,7 +345,7 @@
 # 2026-05-28 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.3
 #   Parallelize all API calls: fire all needed endpoints in background, wait
-#   once — cuts runtime from ~N×RTT to ~1×RTT (alerts, firmware, sensors,
+#   once - cuts runtime from ~N×RTT to ~1×RTT (alerts, firmware, sensors,
 #   fwpolicy4/6 now use prefetched temp files); temp dir cleaned up on exit
 #   -eUp: fix uptime for FortiOS 7.6.x (no utc_last_reboot in REST API):
 #         use SNMP OID_UPTIME (hundredths of seconds) when --snmp-community
@@ -324,7 +354,7 @@
 #
 # 2026-05-28 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.2
-#   -eUp: new uptime check — alerts when uptime is below threshold (reboot
+#   -eUp: new uptime check - alerts when uptime is below threshold (reboot
 #         detection); --warn-uptime <min> / --crit-uptime <min> (default: 0 =
 #         disabled, informational only); perfdata: uptime_seconds
 #
@@ -340,13 +370,13 @@
 #
 # 2026-05-28 Felix Longardt <monitoring@longardt.com>
 # Release: 1.4.0
-#   -eFirmware: new check — /monitor/system/firmware: installed version,
+#   -eFirmware: new check - /monitor/system/firmware: installed version,
 #               available GA updates; WARN if update available (--no-firmware-updates-warn
 #               to suppress); verbose lists all available versions
-#   -eSensor: new check — /monitor/system/sensor-info: temperature, voltage, fan
+#   -eSensor: new check - /monitor/system/sensor-info: temperature, voltage, fan
 #             speed sensors; uses appliance-defined upper/lower non-critical/critical
 #             thresholds; sensors reporting 0 are skipped
-#   -eFWStats: new check — /monitor/firewall/policy/select + policy6/select:
+#   -eFWStats: new check - /monitor/firewall/policy/select + policy6/select:
 #              aggregate bytes (total/ASIC/SW/NTurbo), active sessions, hit count;
 #              counter perfdata only, no alert thresholds
 #   -eRes: read cpu-use-threshold and memory-use-threshold-green/red from
@@ -366,7 +396,7 @@
 # Release: 1.3.0
 #   -eNI: add tx/rx bytes + tx/rx errors to perfdata; --warn-ni-errors/--crit-ni-errors
 #         thresholds for error counter alerting (default: disabled)
-#   -eHA: fix HA mode detection — read from /cmdb/system/ha (not results.ha_info which
+#   -eHA: fix HA mode detection - read from /cmdb/system/ha (not results.ha_info which
 #         is absent in FortiOS 7.6.x)
 #   -eLic: add FortiGuard DB last_update age check for licensed/free_license features;
 #          --warn-db-age (default 7d) / --crit-db-age (default 30d)
@@ -421,7 +451,7 @@
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="1.4.31"
+REVISION="1.4.37"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -472,7 +502,7 @@ OID_IF_OUT_OCTETS=".1.3.6.1.2.1.2.2.1.16"        # ifOutOctets   (32-bit, --use-
 OID_IF_IN_ERR=".1.3.6.1.2.1.2.2.1.14"            # ifInErrors
 OID_IF_OUT_ERR=".1.3.6.1.2.1.2.2.1.20"           # ifOutErrors
 
-# FORTINET-FORTIGATE-MIB — IPsec VPN tunnel table (fgVpnTunTable)
+# FORTINET-FORTIGATE-MIB - IPsec VPN tunnel table (fgVpnTunTable)
 OID_VPN_NAME=".1.3.6.1.4.1.12356.101.12.2.2.1.2"  # fgVpnTunEntPhase1Name (P1/parent tunnel)
 OID_VPN_P2NAME=".1.3.6.1.4.1.12356.101.12.2.2.1.3" # fgVpnTunEntPhase2Name
 OID_VPN_STATUS=".1.3.6.1.4.1.12356.101.12.2.2.1.20" # fgVpnTunEntStatus (1=down 2=up)
@@ -520,7 +550,7 @@ cat << EOM
  This plugin monitors Fortinet FortiGate firewalls via the REST API v2
  (https://<host>/api/v2/).
 
- Connects directly to the firewall — no FortiManager required.
+ Connects directly to the firewall - no FortiManager required.
  Uses HTTPS with --insecure to accept self-signed certificates.
  Authentication via API token (preferred) or username/password.
 
@@ -535,14 +565,14 @@ Options:
  -T, --token <token>
     API token (FortiGate GUI: System > Administrators > Create New > REST API Admin)
  -U, --username <username>
-    Username for session-based authentication (cookie/CSRF — use -T where possible)
+    Username for session-based authentication (cookie/CSRF - use -T where possible)
  -P, --password <password>
     Password for session-based authentication
  -SC, --snmp-community <community>
-    SNMP v2c community string — enables SNMP-based resource/uptime collection
+    SNMP v2c community string - enables SNMP-based resource/uptime collection
     (uses FORTINET-FORTIGATE-MIB OIDs; requires snmpget)
  --snmp-user <username>
-    SNMPv3 security name — enables SNMPv3 mode; cannot be combined with -SC
+    SNMPv3 security name - enables SNMPv3 mode; cannot be combined with -SC
  --snmp-auth-proto <MD5|SHA>
     SNMPv3 authentication protocol (default: SHA)
  --snmp-auth-pass <password>
@@ -557,9 +587,9 @@ Options:
     SNMP port (default: 161)
 
  -N, --hostname <name>
-    Expected hostname — exits UNKNOWN if connected device does not match
+    Expected hostname - exits UNKNOWN if connected device does not match
 
- Enable flags (opt-in — if any -eX flag is given, only those checks run):
+ Enable flags (opt-in - if any -eX flag is given, only those checks run):
  -eSys,     --enable-system
     System info: model, serial, hostname, FortiOS version, uptime, HA role
  -eRes,     --enable-resources
@@ -602,7 +632,7 @@ Options:
     DoS protection: total rules, blocking/log-only breakdown;
     thresholds: --warn/crit-utm-update (days, applies to all services with a known db date)
  -eSD,      --enable-storage
-    Disk/storage partition usage (thresholds: -w / -c)
+    Disk/storage partition usage; thresholds: --warn-disk / --crit-disk (default 80/90%)
  -eLic,     --enable-license
     FortiCare support and FortiGuard feature license expiry
  -eCert,    --enable-certs
@@ -636,7 +666,7 @@ Options:
  -A,        --enable-all
     Enable all available checks (default when no -eX flags given)
 
- Disable flags (opt-out — suppress individual modules from the default -A set):
+ Disable flags (opt-out - suppress individual modules from the default -A set):
  --disable-system        --disable-resources     --disable-ha
  --disable-interfaces    --disable-vpn           --disable-sslvpn
  --disable-ntp           --disable-sdwan         --disable-ap
@@ -659,6 +689,10 @@ Options:
     WARNING threshold for memory usage in % (default: 80)
  -cMem <integer>
     CRITICAL threshold for memory usage in % (default: 90)
+ --warn-disk <integer>
+    WARNING threshold for disk/storage usage in % (default: 80; used by -eRes and -eSD)
+ --crit-disk <integer>
+    CRITICAL threshold for disk/storage usage in % (default: 90; used by -eRes and -eSD)
  --warn-cert <integer>
     WARNING threshold for certificate expiry in days (default: 30)
  --crit-cert <integer>
@@ -688,7 +722,7 @@ Options:
     (default: only versions newer than the installed version are shown)
 
  --ifup <list>
-    Comma-separated interfaces that MUST be link-up — CRITICAL if any are down
+    Comma-separated interfaces that MUST be link-up - CRITICAL if any are down
     (when set, only listed interfaces are checked; others are informational)
  --ifdown <list>
     Comma-separated interfaces that are EXPECTED to be down (maintenance/unused)
@@ -702,7 +736,7 @@ Options:
  --ignore-license <list>
     Comma-separated list of license feature names to skip (e.g. appctrl,webfilter)
  --ignore-all-licenses
-    Suppress WARN/CRIT for all license issues — show info only, no alert state
+    Suppress WARN/CRIT for all license issues - show info only, no alert state
  --alert-rows <integer>
     Number of recent log entries to scan for alerts (default: 50)
  --no-perfdata
@@ -1200,14 +1234,14 @@ while [[ -n "${1}" ]]; do
 done
 
 # Check mandatory parameters and dependencies
-[[ -z "${JQ}" ]]   && { echo "${PROGNAME}: jq is required — please install it";   exit 4; }
-[[ -z "${CURL}" ]] && { echo "${PROGNAME}: curl is required — please install it"; exit 4; }
-[[ -z "${AWK}" ]]  && { echo "${PROGNAME}: awk is required — please install it";  exit 4; }
+[[ -z "${JQ}" ]]   && { echo "${PROGNAME}: jq is required - please install it";   exit 4; }
+[[ -z "${CURL}" ]] && { echo "${PROGNAME}: curl is required - please install it"; exit 4; }
+[[ -z "${AWK}" ]]  && { echo "${PROGNAME}: awk is required - please install it";  exit 4; }
 [[ -z "${fg_host}" ]] && exit_unknown "FortiGate hostname or IP (-H) is required!"
 [[ -z "${api_token}" && ( -z "${api_user}" || -z "${api_pass}" ) && -z "${snmp_community}" && -z "${snmp_user}" ]] && \
 	exit_unknown "Authentication required: -T <api_token>  OR  -U <user> -P <pass>  OR  --snmp-community / --snmp-user (SNMP-only mode)"
 
-# If no explicit enable flags → enable all (opt-out mode via --disable-X)
+# If no explicit enable flags -> enable all (opt-out mode via --disable-X)
 [[
 -z "${enable_sys}"      &&
 -z "${enable_res}"      &&
@@ -1307,20 +1341,20 @@ done
 # Catch this early so the user gets a clear error instead of silent empty results.
 if [[ -n "${snmp_user}" ]]; then
 	if [[ -n "${snmp_auth_pass}" && ${#snmp_auth_pass} -lt 8 ]]; then
-		echo "[UNKNOWN] - SNMPv3 auth passphrase too short (${#snmp_auth_pass} chars) — USM requires minimum 8 characters"
+		echo "[UNKNOWN] - SNMPv3 auth passphrase too short (${#snmp_auth_pass} chars) - USM requires minimum 8 characters"
 		exit 4
 	fi
 	if [[ -n "${snmp_priv_pass}" && ${#snmp_priv_pass} -lt 8 ]]; then
-		echo "[UNKNOWN] - SNMPv3 priv passphrase too short (${#snmp_priv_pass} chars) — USM requires minimum 8 characters"
+		echo "[UNKNOWN] - SNMPv3 priv passphrase too short (${#snmp_priv_pass} chars) - USM requires minimum 8 characters"
 		exit 4
 	fi
 fi
 
 # ---------------------------------------------------------------------------
-# SNMP helper — defined once, used by uptime and resource checks.
+# SNMP helper - defined once, used by uptime and resource checks.
 # Supports v2c (--snmp-community) and v3 (--snmp-user); both can coexist
 # with API credentials. Security level is auto-derived when not explicit:
-#   no auth/priv → noAuthNoPriv; auth only → authNoPriv; both → authPriv
+#   no auth/priv -> noAuthNoPriv; auth only -> authNoPriv; both -> authPriv
 # ---------------------------------------------------------------------------
 _snmp_avail=""
 if [[ -n "${SNMPGET}" ]]; then
@@ -1377,7 +1411,7 @@ status_warn="[WARNING]"
 status_crit="[CRITICAL]"
 status_unkn="[UNKNOWN]"
 
-# Curl option block — --insecure for self-signed FortiGate certificates
+# Curl option block - --insecure for self-signed FortiGate certificates
 CURL_OPTS="--insecure --silent --max-time 15"
 
 fg_output=""
@@ -1395,16 +1429,16 @@ fi
 FG_API="https://${fg_host}/api/v2"
 
 # ---------------------------------------------------------------------------
-# Authentication — API token, username/password, or SNMP-only (no REST API)
+# Authentication - API token, username/password, or SNMP-only (no REST API)
 # ---------------------------------------------------------------------------
 if [[ -n "${api_token}" ]]; then
 	fg_api_get() {
 		${CURL} ${CURL_OPTS} -X GET -H "Authorization: Bearer ${api_token}" "$@"
 	}
 elif [[ -z "${api_user}" && ( -n "${snmp_community}" || -n "${snmp_user}" ) ]]; then
-	# SNMP-only mode: no REST API credentials — stub out API calls
+	# SNMP-only mode: no REST API credentials - stub out API calls
 	if [[ -z "${SNMPGET}" ]]; then
-		echo "${status_unkn} - snmpget is required for SNMP mode — please install net-snmp-utils (net-snmp)"
+		echo "${status_unkn} - snmpget is required for SNMP mode - please install net-snmp-utils (net-snmp)"
 		exit 4
 	fi
 	_snmp_only=1
@@ -1433,7 +1467,7 @@ else
 
 	if [[ -z "${_csrf_token}" ]]; then
 		rm -f "${_cookie_jar}"
-		echo "${status_unkn} - Login to ${fg_host} failed — no CSRF token in response (check credentials and that REST API access is permitted)"
+		echo "${status_unkn} - Login to ${fg_host} failed - no CSRF token in response (check credentials and that REST API access is permitted)"
 		exit 4
 	fi
 
@@ -1455,13 +1489,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Fetch system status (shared by all checks — provides hostname/model label)
+# Fetch system status (shared by all checks - provides hostname/model label)
 # In SNMP-only mode, populate from SNMP OIDs instead of REST API.
 # ---------------------------------------------------------------------------
 if [[ -n "${_snmp_only}" ]]; then
 	fg_hostname=$(_snmp_get "${OID_SYSNAME}")
 	if [[ -z "${fg_hostname}" ]]; then
-		# SNMP not responding — redefine helpers as no-ops so all subsequent
+		# SNMP not responding - redefine helpers as no-ops so all subsequent
 		# _snmp_get/_snmp_walk calls return instantly without triggering timeouts.
 		_snmp_avail=""
 		_snmp_get()  { :; }
@@ -1469,7 +1503,7 @@ if [[ -n "${_snmp_only}" ]]; then
 		fg_hostname="${fg_host}"
 		fg_version="unknown"
 		fg_model="FortiGate"
-		fg_output+="${status_ok} - ${fg_host}: SNMP not responding — check credentials and FortiGate SNMP allowed-hosts config\n"
+		fg_output+="${status_ok} - ${fg_host}: SNMP not responding - check credentials and FortiGate SNMP allowed-hosts config\n"
 	else
 		[[ "${fg_hostname}" == "0" ]] && fg_hostname="${fg_host}"
 		fg_version=$(_snmp_get "${OID_FG_VERSION}")
@@ -1486,13 +1520,13 @@ else
 	_sys_buffer=$(fg_api_get "${FG_API}/monitor/system/status")
 
 	if [[ -z "${_sys_buffer}" || ! "${_sys_buffer}" =~ '"results"' ]]; then
-		echo "${status_unkn} - Failed to retrieve system status from ${fg_host} — check host and credentials"
+		echo "${status_unkn} - Failed to retrieve system status from ${fg_host} - check host and credentials"
 		exit 4
 	fi
 
 	_http_status=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r '.http_status // 200' 2>/dev/null)
 	if [[ "${_http_status}" -ge 400 ]] 2>/dev/null; then
-		echo "${status_unkn} - API error ${_http_status} from ${fg_host} — check credentials and REST API permissions"
+		echo "${status_unkn} - API error ${_http_status} from ${fg_host} - check credentials and REST API permissions"
 		exit 4
 	fi
 
@@ -1501,12 +1535,12 @@ else
 	fg_model=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r \
 		'(.results.model_name // "") + (if .results.model_number != null and .results.model_number != "" then " " + .results.model_number else "" end) | if . == "" or . == " " then (.results.model // "unknown") else . end' 2>/dev/null)
 	fg_version=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r '.version // "unknown"' 2>/dev/null)
-	# ha_info is absent in FortiOS 7.6.x — derive from CMDB instead
+	# ha_info is absent in FortiOS 7.6.x - derive from CMDB instead
 	fg_ha_role=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r \
 		'.results.ha_info.role // ""' 2>/dev/null)
 fi
 # ---------------------------------------------------------------------------
-# Parallel API prefetch — fire all needed endpoints in background, wait once.
+# Parallel API prefetch - fire all needed endpoints in background, wait once.
 # Avoids serial TLS handshakes; cuts runtime from ~N×RTT to ~1×RTT.
 # ---------------------------------------------------------------------------
 _pf=$(mktemp -d /tmp/.fg_check_XXXXXX)
@@ -1714,18 +1748,18 @@ if [[ ( -n "${enable_uptime}" || -n "${enable_all}" ) && -z "${disable_uptime}" 
 		if [[ "${crit_uptime}" -gt 0 ]] 2>/dev/null && \
 		   (( _up_diff_min < crit_uptime )) 2>/dev/null; then
 			_up_state="${status_crit}"
-			fg_problem_output+="${status_crit} - Uptime ${fg_hostname}: ${_up_days}d ${_up_hours}h ${_up_mins}m — below critical threshold ${crit_uptime}m (recent reboot?)\n"
+			fg_problem_output+="${status_crit} - Uptime ${fg_hostname}: ${_up_days}d ${_up_hours}h ${_up_mins}m - below critical threshold ${crit_uptime}m (recent reboot?)\n"
 		elif [[ "${warn_uptime}" -gt 0 ]] 2>/dev/null && \
 		     (( _up_diff_min < warn_uptime )) 2>/dev/null; then
 			_up_state="${status_warn}"
-			fg_problem_output+="${status_warn} - Uptime ${fg_hostname}: ${_up_days}d ${_up_hours}h ${_up_mins}m — below warning threshold ${warn_uptime}m (recent reboot?)\n"
+			fg_problem_output+="${status_warn} - Uptime ${fg_hostname}: ${_up_days}d ${_up_hours}h ${_up_mins}m - below warning threshold ${warn_uptime}m (recent reboot?)\n"
 		fi
 
 		fg_output+="${_up_state} - Uptime ${fg_hostname}: ${_up_days}d ${_up_hours}h ${_up_mins}m\n"
 		fg_perf+=" uptime_seconds=${_up_diff}"
 	else
 		if [[ -n "${_snmp_avail}" ]]; then
-			fg_output+="${status_ok} - Uptime ${fg_hostname}: not available (SNMP OID returned no data — check FortiGate SNMP config)\n"
+			fg_output+="${status_ok} - Uptime ${fg_hostname}: not available (SNMP OID returned no data - check FortiGate SNMP config)\n"
 		elif [[ -n "${_snmp_only}" ]]; then
 			fg_output+="${status_ok} - Uptime ${fg_hostname}: not available (SNMP not responding)\n"
 		else
@@ -1785,7 +1819,7 @@ if [[ ( -n "${enable_res}" || -n "${enable_all}" ) && -z "${disable_res}" ]]; th
 		# Response structure: results.<field> is an array where [0].current is
 		# the instantaneous value and [0].historical["1-min"].values contains
 		# 3-second samples of 1-minute averages (newest first).
-		# We average the 5 most-recent 1-min samples → ~5-minute rolling average.
+		# We average the 5 most-recent 1-min samples -> ~5-minute rolling average.
 		_res_buffer=$(cat "${_pf}/res_usage.json" 2>/dev/null)
 		if [[ -z "${_res_buffer}" || ! "${_res_buffer}" =~ '"results"' ]]; then
 			_res_buffer=$(cat "${_pf}/res_usage_plain.json" 2>/dev/null)
@@ -1988,7 +2022,7 @@ if [[ ( -n "${enable_ha}" || -n "${enable_all}" ) && -z "${disable_ha}" ]]; then
 			_ha_group_s=""
 			[[ -n "${_ha_group}" && "${_ha_group}" != "null" ]] && _ha_group_s=" | Group: ${_ha_group}"
 
-			fg_output+="${status_ok} - ${fg_hostname}: HA ${fg_ha_mode} — ${_ha_total} member(s)${_ha_group_s}\n"
+			fg_output+="${status_ok} - ${fg_hostname}: HA ${fg_ha_mode} - ${_ha_total} member(s)${_ha_group_s}\n"
 
 			declare -a _ha_names _ha_roles _ha_cpus _ha_mems _ha_nets _ha_tbytes
 			while IFS=$'\t' read -r _hm_host _hm_role _hm_cpu _hm_mem _hm_net _hm_tb; do
@@ -2151,7 +2185,7 @@ if [[ ( -n "${enable_ni}" || -n "${enable_all}" ) && -z "${disable_ni}" ]]; then
 					fg_problem_output+="${status_crit} - NI ${fg_hostname}/${_nin}: link DOWN${_admin_s}\n"
 				fi
 			elif [[ -n "${_ni_expect_down[${_nin}]}" ]]; then
-				# Expected to be DOWN — flag if it comes up unexpectedly
+				# Expected to be DOWN - flag if it comes up unexpectedly
 				(( _ni_checked++ ))
 				if [[ "${_ni_links[count]}" == "up" ]]; then
 					fg_output+="${status_warn} - NI ${fg_hostname}/${_nin}: link UP (expected DOWN)${_ni_detail}\n"
@@ -2162,7 +2196,7 @@ if [[ ( -n "${enable_ni}" || -n "${enable_all}" ) && -z "${disable_ni}" ]]; then
 				fi
 			else
 				# Interface is not in --ifup or --ifdown (or no lists defined at all)
-				# → current state is assumed correct, always [OK]
+				# -> current state is assumed correct, always [OK]
 				if [[ "${_ni_links[count]}" == "up" ]]; then
 					(( _ni_up++ ))
 				else
@@ -2187,15 +2221,16 @@ if [[ ( -n "${enable_ni}" || -n "${enable_all}" ) && -z "${disable_ni}" ]]; then
 		      _ni_txerr _ni_rxerr _ni_txbytes _ni_rxbytes \
 		      _ni_bl_map _ni_expect_up _ni_expect_down
 	elif [[ -n "${_snmp_only}" && -n "${SNMPWALK}" ]]; then
-		# SNMP interface check — IF-MIB ifTable
+		# SNMP interface check - IF-MIB ifTable
 		declare -A _ni_bl_map _ni_expect_up _ni_expect_down
 		[[ -n "${ni_blacklist}" ]] && { IFS=',' read -ra _a <<< "${ni_blacklist}"; for _e in "${_a[@]}"; do _ni_bl_map["${_e}"]=1; done; }
 		[[ -n "${ni_ifup}" ]]      && { IFS=',' read -ra _a <<< "${ni_ifup}";      for _e in "${_a[@]}"; do _ni_expect_up["${_e}"]=1; done; }
-		mapfile -t _ni_names  < <(_snmp_walk "${OID_IF_NAME}"     | tr -d ' ')
+		[[ -n "${ni_ifdown}" ]]    && { IFS=',' read -ra _a <<< "${ni_ifdown}";    for _e in "${_a[@]}"; do _ni_expect_down["${_e}"]=1; done; }
+		mapfile -t _ni_names  < <(_snmp_walk "${OID_IF_NAME}"     | tr -d ' "')
 		mapfile -t _ni_admin  < <(_snmp_walk "${OID_IF_ADMIN}"    | tr -d ' ')
 		mapfile -t _ni_oper   < <(_snmp_walk "${OID_IF_OPER}"     | tr -d ' ')
 		mapfile -t _ni_speeds < <(_snmp_walk "${OID_IF_HIGHSPEED}"| tr -d ' ')
-		[[ -n "${verbose}" ]] && mapfile -t _ni_aliases < <(_snmp_walk "${OID_IF_ALIAS}")
+		[[ -n "${verbose}" ]] && mapfile -t _ni_aliases < <(_snmp_walk "${OID_IF_ALIAS}" | tr -d '"')
 		# Traffic counters: 64-bit HC by default, 32-bit with --use-32bit-counters
 		if [[ -z "${snmp_32bit_counters}" ]]; then
 			mapfile -t _ni_in_bytes  < <(_snmp_walk "${OID_IF_HC_IN}"     | tr -d ' ')
@@ -2227,15 +2262,32 @@ if [[ ( -n "${enable_ni}" || -n "${enable_all}" ) && -z "${disable_ni}" ]]; then
 			_ni_rxb="${_ni_in_bytes[_nii]:-0}"  ; [[ ! "${_ni_rxb}"  =~ ^[0-9]+$ ]] && _ni_rxb=0
 			_ni_txb="${_ni_out_bytes[_nii]:-0}" ; [[ ! "${_ni_txb}"  =~ ^[0-9]+$ ]] && _ni_txb=0
 			fg_perf+=" ni_${_ni_lbl}_rx_bytes=${_ni_rxb}c ni_${_ni_lbl}_tx_bytes=${_ni_txb}c"
-			if [[ "${_ioper}" == "1" ]]; then
-				(( _ni_up++ ))
-				[[ -n "${verbose}" ]] && fg_output+="${status_ok} - Interface ${_iname}${_alias_s}: up${_speed_s}\n"
-			else
-				(( _ni_down++ ))
-				if [[ -n "${_ni_expect_up[${_iname}]}" ]]; then
+			if [[ -n "${_ni_expect_up[${_iname}]}" ]]; then
+				(( _ni_checked++ ))
+				if [[ "${_ioper}" == "1" ]]; then
+					(( _ni_up++ ))
+					[[ -n "${verbose}" ]] && fg_output+="${status_ok} - Interface ${_iname}${_alias_s}: up${_speed_s}\n"
+				else
+					(( _ni_down++ ))
 					fg_output+="${status_crit} - Interface ${_iname}: down (expected up)${_speed_s}\n"
 					fg_problem_output+="${status_crit} - Interface ${_iname}: down (expected up)\n"
-				elif [[ -z "${ni_ignore_down}" ]]; then
+				fi
+			elif [[ -n "${_ni_expect_down[${_iname}]}" ]]; then
+				(( _ni_checked++ ))
+				if [[ "${_ioper}" == "1" ]]; then
+					(( _ni_up++ ))
+					fg_output+="${status_warn} - Interface ${_iname}${_alias_s}: up (expected down)${_speed_s}\n"
+					fg_problem_output+="${status_warn} - Interface ${_iname}: up but expected down\n"
+				else
+					(( _ni_down++ ))
+					[[ -n "${verbose}" ]] && fg_output+="${status_ok} - Interface ${_iname}${_alias_s}: down (as expected)${_speed_s}\n"
+				fi
+			else
+				if [[ "${_ioper}" == "1" ]]; then
+					(( _ni_up++ ))
+					[[ -n "${verbose}" ]] && fg_output+="${status_ok} - Interface ${_iname}${_alias_s}: up${_speed_s}\n"
+				else
+					(( _ni_down++ ))
 					[[ -n "${verbose}" ]] && fg_output+="${status_warn} - Interface ${_iname}${_alias_s}: down${_speed_s}\n"
 				fi
 			fi
@@ -2243,7 +2295,11 @@ if [[ ( -n "${enable_ni}" || -n "${enable_all}" ) && -z "${disable_ni}" ]]; then
 		if [[ ${#_ni_names[@]} -eq 0 ]]; then
 			fg_output+="${status_ok} - Interfaces ${fg_hostname}: no data (check SNMP permissions)\n"
 		else
-			fg_output+="${status_ok} - Interfaces ${fg_hostname}: ${_ni_total} total, ${_ni_up} up, ${_ni_down} down (SNMP)\n"
+			if [[ -n "${ni_ifup}" || -n "${ni_ifdown}" ]]; then
+				fg_output+="${status_ok} - Interfaces ${fg_hostname}: ${_ni_checked} checked (${_ni_up} expected-up OK) | ${_ni_total} total, ${_ni_up} up, ${_ni_down} down (SNMP)\n"
+			else
+				fg_output+="${status_ok} - Interfaces ${fg_hostname}: ${_ni_total} total, ${_ni_up} up, ${_ni_down} down (SNMP)\n"
+			fi
 			fg_perf+=" ni_total=${_ni_total} ni_up=${_ni_up} ni_down=${_ni_down} ni_checked=${_ni_checked}"
 		fi
 		unset _ni_names _ni_admin _ni_oper _ni_speeds _ni_aliases \
@@ -2359,10 +2415,10 @@ if [[ ( -n "${enable_vpn}" || -n "${enable_all}" ) && -z "${disable_vpn}" ]]; th
 			unset _vpn_names _vpn_statuses _vpn_rgwys _vpn_in _vpn_out _vpn_bl_map
 		fi
 	elif [[ -n "${_snmp_only}" && -n "${SNMPWALK}" ]]; then
-		# SNMP VPN check — FortiGate fgVpnTunTable
+		# SNMP VPN check - FortiGate fgVpnTunTable
 		declare -A _vpn_bl_map
 		[[ -n "${vpn_blacklist}" ]] && { IFS=',' read -ra _a <<< "${vpn_blacklist}"; for _e in "${_a[@]}"; do _vpn_bl_map["${_e}"]=1; done; }
-		mapfile -t _vpn_names   < <(_snmp_walk "${OID_VPN_NAME}"   | tr -d ' ')
+		mapfile -t _vpn_names   < <(_snmp_walk "${OID_VPN_NAME}"   | tr -d ' "')
 		mapfile -t _vpn_sts     < <(_snmp_walk "${OID_VPN_STATUS}" | tr -d ' ')
 		mapfile -t _vpn_in_oct  < <(_snmp_walk "${OID_VPN_IN}"     | tr -d ' ')
 		mapfile -t _vpn_out_oct < <(_snmp_walk "${OID_VPN_OUT}"    | tr -d ' ')
@@ -2385,7 +2441,7 @@ if [[ ( -n "${enable_vpn}" || -n "${enable_all}" ) && -z "${disable_vpn}" ]]; th
 				[[ -n "${verbose}" ]] && fg_output+="${status_ok} - VPN Tunnel ${_vname}: up${_vbytes_s}\n"
 			else
 				(( _vpn_down++ ))
-				_vpn_dn_lines+=("VPN Tunnel \"${_vname}\": down")
+				_vpn_dn_lines+=("VPN Tunnel ${_vname}: down")
 			fi
 		done
 		# Apply threshold: determine severity of down tunnels
@@ -2488,7 +2544,7 @@ if [[ ( -n "${enable_ntp}" || -n "${enable_all}" ) && -z "${disable_ntp}" ]]; th
 		done < <(echo "${_ntp_buf}" | "${JQ}" --unbuffered -r \
 			'.results[] | [(.server // .ip), (.reachable | tostring), ((.offset // 0) | tostring), ((.stratum // 0) | tostring)] | join("\t")' 2>/dev/null)
 
-		# Determine summary severity: unreachable peers → CRIT, then offset thresholds
+		# Determine summary severity: unreachable peers -> CRIT, then offset thresholds
 		if [[ "${_ntp_total}" -eq 0 || "${_ntp_reachable}" -eq 0 ]]; then
 			fg_output+="${status_crit} - NTP ${fg_hostname}: no NTP servers reachable (${_ntp_total} configured)\n"
 			fg_problem_output+="${status_crit} - NTP ${fg_hostname}: no NTP servers reachable\n"
@@ -2856,7 +2912,7 @@ if [[ ( -n "${enable_dhcp}" || -n "${enable_all}" ) && -z "${disable_dhcp}" ]]; 
 			done
 		fi
 
-		# Build lease count map: server_id → count
+		# Build lease count map: server_id -> count
 		declare -A _dhcp_lmap
 		while IFS=$'\t' read -r _dl_id _dl_cnt; do
 			_dhcp_lmap["${_dl_id}"]="${_dl_cnt}"
@@ -2957,25 +3013,50 @@ if [[ ( -n "${enable_ipam}" || -n "${enable_all}" ) && -z "${disable_ipam}" ]]; 
 		_ipam_enabled=$(echo "${_ipam_status_buf}" | "${JQ}" --unbuffered -r '.results.status // "disabled"' 2>/dev/null)
 		_ipam_type=$(echo "${_ipam_status_buf}"    | "${JQ}" --unbuffered -r '.results.server_type // ""'   2>/dev/null)
 		_ipam_avail=$(echo "${_ipam_status_buf}"   | "${JQ}" --unbuffered -r '.results.available_subnet_size // 0' 2>/dev/null)
+		_ipam_alloc=$(echo "${_ipam_status_buf}"   | "${JQ}" --unbuffered -r '.results.allocated_subnet_size // 0' 2>/dev/null)
 
 		_ipam_pools=0 ; _ipam_rules=0
+		declare -a _ipam_pool_subnets
 		if [[ -n "${_ipam_config_buf}" && "${_ipam_config_buf}" =~ '"results"' ]]; then
 			_ipam_pools=$(echo "${_ipam_config_buf}" | "${JQ}" --unbuffered -r '(.results.pools // []) | length' 2>/dev/null)
 			_ipam_rules=$(echo "${_ipam_config_buf}" | "${JQ}" --unbuffered -r '(.results.rules // []) | length' 2>/dev/null)
+			while IFS= read -r _ps; do
+				[[ -n "${_ps}" ]] && _ipam_pool_subnets+=("${_ps}")
+			done < <(echo "${_ipam_config_buf}" | "${JQ}" --unbuffered -r '(.results.pools // [])[] | .subnet // empty' 2>/dev/null)
+		fi
+
+		# Compute total and usage %
+		_ipam_total=0 ; _ipam_usage_pct=0
+		if [[ "${_ipam_alloc}" =~ ^[0-9]+$ && "${_ipam_avail}" =~ ^[0-9]+$ ]]; then
+			_ipam_total=$(( _ipam_alloc + _ipam_avail ))
+			[[ "${_ipam_total}" -gt 0 ]] && _ipam_usage_pct=$(( _ipam_alloc * 100 / _ipam_total ))
 		fi
 
 		if [[ "${_ipam_enabled}" == "enabled" || "${_ipam_enabled}" == "enable" ]]; then
 			_ipam_detail=""
 			[[ -n "${_ipam_type}" ]] && _ipam_detail+=" | type: ${_ipam_type}"
-			[[ "${_ipam_pools}"  =~ ^[0-9]+$ && "${_ipam_pools}"  -gt 0 ]] && _ipam_detail+=" | pools: ${_ipam_pools}"
-			[[ "${_ipam_rules}"  =~ ^[0-9]+$ && "${_ipam_rules}"  -gt 0 ]] && _ipam_detail+=" | rules: ${_ipam_rules}"
-			[[ "${_ipam_avail}"  =~ ^[0-9]+$ ]] && _ipam_detail+=" | available subnets: ${_ipam_avail}"
+			[[ "${_ipam_pools}" =~ ^[0-9]+$ && "${_ipam_pools}" -gt 0 ]] && _ipam_detail+=" | pools: ${_ipam_pools}"
+			[[ "${_ipam_rules}" =~ ^[0-9]+$ && "${_ipam_rules}" -gt 0 ]] && _ipam_detail+=" | rules: ${_ipam_rules}"
+			if [[ "${_ipam_total}" -gt 0 ]]; then
+				_ipam_detail+=" | allocated: ${_ipam_alloc}/${_ipam_total} (${_ipam_usage_pct}%) | available: ${_ipam_avail}"
+			elif [[ "${_ipam_avail}" =~ ^[0-9]+$ ]]; then
+				_ipam_detail+=" | available subnets: ${_ipam_avail}"
+			fi
 			fg_output+="${status_ok} - IPAM ${fg_hostname}: enabled${_ipam_detail}\n"
-			[[ "${_ipam_pools}" =~ ^[0-9]+$ ]] && fg_perf+=" ipam_pools=${_ipam_pools}"
-			[[ "${_ipam_avail}" =~ ^[0-9]+$ ]] && fg_perf+=" ipam_available_subnets=${_ipam_avail}"
+			if [[ -n "${verbose}" && "${#_ipam_pool_subnets[@]}" -gt 0 ]]; then
+				for _ps in "${_ipam_pool_subnets[@]}"; do
+					fg_output+="${status_ok} - IPAM ${fg_hostname}: pool ${_ps}\n"
+				done
+			fi
+			[[ "${_ipam_pools}"     =~ ^[0-9]+$ ]] && fg_perf+=" ipam_pools=${_ipam_pools}"
+			[[ "${_ipam_alloc}"     =~ ^[0-9]+$ ]] && fg_perf+=" ipam_allocated_subnets=${_ipam_alloc}"
+			[[ "${_ipam_avail}"     =~ ^[0-9]+$ ]] && fg_perf+=" ipam_available_subnets=${_ipam_avail}"
+			[[ "${_ipam_total}"     -gt 0        ]] && fg_perf+=" ipam_total_subnets=${_ipam_total}"
+			[[ "${_ipam_usage_pct}" =~ ^[0-9]+$  ]] && fg_perf+=" ipam_usage_pct=${_ipam_usage_pct};0;100"
 		else
 			[[ -n "${verbose}" ]] && fg_output+="${status_ok} - IPAM ${fg_hostname}: disabled\n"
 		fi
+		unset _ipam_pool_subnets
 	else
 		fg_output+="${status_ok} - IPAM ${fg_hostname}: not available in SNMP-only mode\n"
 	fi
@@ -3032,7 +3113,7 @@ if [[ ( -n "${enable_utm}" || -n "${enable_all}" ) && -z "${disable_utm}" ]]; th
 					_utm_age_s=" | updated: ${_utm_age_days}d ago"
 				fi
 			else
-				# No valid last_update (with or without a DB) — treat as infinitely stale
+				# No valid last_update (with or without a DB) - treat as infinitely stale
 				_utm_age_days=99999
 				if [[ -n "${_utm_version}" && "${_utm_version}" != "0.00000" ]]; then
 					_utm_age_s=" | updated: never (has db)"
@@ -3396,16 +3477,16 @@ if [[ ( -n "${enable_sd}" || -n "${enable_all}" ) && -z "${disable_sd}" ]]; then
 
 				_sd_label="${_sdn//\//_}"
 				_sd_label="${_sd_label//-/_}"
-				fg_perf+=" storage_${_sd_label}_pct=${_sdp};${warning};${critical};0;100"
+				fg_perf+=" storage_${_sd_label}_pct=${_sdp};${warn_disk};${crit_disk};0;100"
 				fg_perf+=" storage_${_sd_label}_used=${_sd_usages[count]}B"
 				fg_perf+=" storage_${_sd_label}_size=${_sd_sizes[count]}B"
 
-				if (( _sdp >= critical )) 2>/dev/null; then
-					fg_output+="${status_crit} - Storage ${fg_hostname}/${_sdn}: ${_sd_detail} (threshold: ${critical}%)\n"
+				if (( _sdp >= crit_disk )) 2>/dev/null; then
+					fg_output+="${status_crit} - Storage ${fg_hostname}/${_sdn}: ${_sd_detail} (threshold: ${crit_disk}%)\n"
 					fg_problem_output+="${status_crit} - Storage ${fg_hostname}/${_sdn}: ${_sdp}% used\n"
 					(( _sd_crit++ ))
-				elif (( _sdp >= warning )) 2>/dev/null; then
-					fg_output+="${status_warn} - Storage ${fg_hostname}/${_sdn}: ${_sd_detail} (threshold: ${warning}%)\n"
+				elif (( _sdp >= warn_disk )) 2>/dev/null; then
+					fg_output+="${status_warn} - Storage ${fg_hostname}/${_sdn}: ${_sd_detail} (threshold: ${warn_disk}%)\n"
 					fg_problem_output+="${status_warn} - Storage ${fg_hostname}/${_sdn}: ${_sdp}% used\n"
 					(( _sd_warn++ ))
 				elif [[ -n "${verbose}" ]]; then
@@ -3442,17 +3523,39 @@ if [[ ( -n "${enable_sd}" || -n "${enable_all}" ) && -z "${disable_sd}" ]]; then
 				else if ($1>=1048576) printf "%.1f MB",$1/1048576
 				else if ($1>=1024) printf "%.1f KB",$1/1024
 				else printf "%d B",$1}')
-			fg_perf+=" log_disk_pct=${_ld_pct};${warning};${critical};0;100"
+			fg_perf+=" log_disk_pct=${_ld_pct};${warn_disk};${crit_disk};0;100"
 			fg_perf+=" log_disk_used=${_ld_used}B"
-			if (( _ld_pct >= critical )) 2>/dev/null; then
-				fg_output+="${status_crit} - Storage ${fg_hostname}/log: ${_ld_used_h} / ${_ld_total_h} (${_ld_pct}%, threshold: ${critical}%)\n"
+			if (( _ld_pct >= crit_disk )) 2>/dev/null; then
+				fg_output+="${status_crit} - Storage ${fg_hostname}/log: ${_ld_used_h} / ${_ld_total_h} (${_ld_pct}%, threshold: ${crit_disk}%)\n"
 				fg_problem_output+="${status_crit} - Storage ${fg_hostname}/log: ${_ld_pct}% used\n"
-			elif (( _ld_pct >= warning )) 2>/dev/null; then
-				fg_output+="${status_warn} - Storage ${fg_hostname}/log: ${_ld_used_h} / ${_ld_total_h} (${_ld_pct}%, threshold: ${warning}%)\n"
+			elif (( _ld_pct >= warn_disk )) 2>/dev/null; then
+				fg_output+="${status_warn} - Storage ${fg_hostname}/log: ${_ld_used_h} / ${_ld_total_h} (${_ld_pct}%, threshold: ${warn_disk}%)\n"
 				fg_problem_output+="${status_warn} - Storage ${fg_hostname}/log: ${_ld_pct}% used\n"
 			elif [[ -n "${verbose}" ]]; then
 				fg_output+="${status_ok} - Storage ${fg_hostname}/log: ${_ld_used_h} / ${_ld_total_h} (${_ld_pct}%)\n"
 			fi
+		fi
+	fi
+
+	# SNMP fallback: use fgSysDiskUsage/fgSysDiskCapacity when REST API unavailable
+	if [[ -n "${_snmp_only}" && -n "${_snmp_avail}" ]]; then
+		_snmp_disk_mb=$(_snmp_val "${OID_DISK}")
+		_snmp_disk_cap=$(_snmp_val "${OID_DISK_CAP}")
+		if [[ "${_snmp_disk_cap}" =~ ^[0-9]+$ && "${_snmp_disk_cap}" -gt 0 ]]; then
+			_snmp_disk_pct=$(( _snmp_disk_mb * 100 / _snmp_disk_cap ))
+			fg_perf+=" disk_pct=${_snmp_disk_pct};${warn_disk};${crit_disk};0;100"
+			fg_perf+=" disk_mb=${_snmp_disk_mb};0;${_snmp_disk_cap}"
+			if (( _snmp_disk_pct >= crit_disk )) 2>/dev/null; then
+				fg_output+="${status_crit} - Storage ${fg_hostname}: ${_snmp_disk_pct}% used (${_snmp_disk_mb}/${_snmp_disk_cap} MB, threshold: ${crit_disk}%)\n"
+				fg_problem_output+="${status_crit} - Storage ${fg_hostname}: disk ${_snmp_disk_pct}% used\n"
+			elif (( _snmp_disk_pct >= warn_disk )) 2>/dev/null; then
+				fg_output+="${status_warn} - Storage ${fg_hostname}: ${_snmp_disk_pct}% used (${_snmp_disk_mb}/${_snmp_disk_cap} MB, threshold: ${warn_disk}%)\n"
+				fg_problem_output+="${status_warn} - Storage ${fg_hostname}: disk ${_snmp_disk_pct}% used\n"
+			else
+				fg_output+="${status_ok} - Storage ${fg_hostname}: ${_snmp_disk_pct}% used (${_snmp_disk_mb}/${_snmp_disk_cap} MB) (SNMP)\n"
+			fi
+		else
+			fg_output+="${status_ok} - Storage ${fg_hostname}: no disk data via SNMP\n"
 		fi
 	fi
 
@@ -3478,7 +3581,7 @@ if [[ ( -n "${enable_lic}" || -n "${enable_all}" ) && -z "${disable_lic}" ]]; th
 		_lic_warn=0
 		_lic_crit=0
 
-		# Generic iteration over all license result keys — works regardless of
+		# Generic iteration over all license result keys - works regardless of
 		# FortiOS naming (appctrl vs app_ctrl, webfilter vs web_filtering, etc.)
 		# Keys skipped: vdom (count-based), vm (null on physical), version
 		_lic_skip_keys="vdom vm version fortigate"
@@ -3523,7 +3626,7 @@ if [[ ( -n "${enable_lic}" || -n "${enable_all}" ) && -z "${disable_lic}" ]]; th
 
 			if [[ "${_feat_status}" == "no-license" ]]; then
 				[[ -n "${verbose}" ]] && \
-					fg_output+="${status_ok} - License ${fg_hostname}: ${_feat} — not licensed\n"
+					fg_output+="${status_ok} - License ${fg_hostname}: ${_feat} - not licensed\n"
 				continue
 			fi
 
@@ -3563,7 +3666,7 @@ if [[ ( -n "${enable_lic}" || -n "${enable_all}" ) && -z "${disable_lic}" ]]; th
 					(( _lic_crit++ ))
 				}
 			elif [[ "${_feat_status}" == "licensed" || "${_feat_status}" == "registered" ]]; then
-				fg_output+="${status_ok} - License ${fg_hostname}: ${_feat} — ${_feat_status}\n"
+				fg_output+="${status_ok} - License ${fg_hostname}: ${_feat} - ${_feat_status}\n"
 			fi
 
 			# For licensed/free_license DB features: check last_update age
@@ -3620,7 +3723,7 @@ if [[ ( -n "${enable_cert}" || -n "${enable_all}" ) && -z "${disable_cert}" ]]; 
 		fg_output+="Certificates:\n---------------------------------------\n"
 	fi
 
-	# Use monitor endpoint — richer than CMDB: has valid_to epoch, cert_protocol, exists flag
+	# Use monitor endpoint - richer than CMDB: has valid_to epoch, cert_protocol, exists flag
 	_cert_buffer=$(cat "${_pf}/certs.json" 2>/dev/null)
 
 	if [[ -n "${_cert_buffer}" && "${_cert_buffer}" =~ '"results"' ]]; then
@@ -4111,7 +4214,7 @@ if [[ -n "${enable_logwatch}" && -z "${disable_logwatch}" ]]; then
 			_lw_v="${_lw_v// /}"
 			if [[ -n "${_lw_v}" ]]; then
 				[[ -n "${_lw_act_expr}" ]] && _lw_act_expr+=" or "
-				_lw_act_expr+="(.action // \"\") == \"${_lw_v}\""
+				_lw_act_expr+="((.action // \"\") | ascii_downcase) == (\"${_lw_v}\" | ascii_downcase)"
 			fi
 		done
 		[[ -n "${_lw_act_expr}" ]] && _lw_jq_sel+=" and (${_lw_act_expr})"
@@ -4142,33 +4245,46 @@ if [[ -n "${enable_logwatch}" && -z "${disable_logwatch}" ]]; then
 		(( _lw_total += _lw_t_cnt ))
 
 		# Use \t as field separator; msg is last so it absorbs any embedded \t
-		while IFS=$'\t' read -r _lw_date _lw_level _lw_eid _lw_act _lw_msg; do
+		while IFS=$'\t' read -r _lw_date _lw_level _lw_eid _lw_act \
+		                           _lw_src _lw_srcport _lw_dst _lw_dstport _lw_polid _lw_msg; do
 			(( _lw_match_count++ ))
 			_lw_eid_s="" ; [[ "${_lw_eid}" != "0" && -n "${_lw_eid}" ]] && _lw_eid_s=" | eventid: ${_lw_eid}"
 			_lw_act_s="" ; [[ -n "${_lw_act}" ]] && _lw_act_s=" | action: ${_lw_act}"
+			_lw_conn_s=""
+			_lw_src_s="${_lw_src}"
+			[[ "${_lw_srcport}" != "0" && -n "${_lw_srcport}" ]] && _lw_src_s+=":${_lw_srcport}"
+			_lw_dst_s="${_lw_dst}"
+			[[ "${_lw_dstport}" != "0" && -n "${_lw_dstport}" ]] && _lw_dst_s+=":${_lw_dstport}"
+			[[ -n "${_lw_src_s}" || -n "${_lw_dst_s}" ]] && _lw_conn_s=" | ${_lw_src_s} -> ${_lw_dst_s}"
+			_lw_pol_s="" ; [[ "${_lw_polid}" != "0" && -n "${_lw_polid}" ]] && _lw_pol_s=" (policy: ${_lw_polid})"
 
 			if [[ "${_lw_filter_mode}" -eq 0 ]]; then
 				case "${_lw_level}" in
 					emergency|alert|critical)
 						(( _lw_crit_count++ ))
-						_lw_lines+=("${status_crit} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s} ${_lw_date}: ${_lw_msg}")
-						fg_problem_output+="${status_crit} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s} ${_lw_date}: ${_lw_msg}\n"
+						_lw_lines+=("${status_crit} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s}${_lw_conn_s}${_lw_pol_s} ${_lw_date}: ${_lw_msg}")
+						fg_problem_output+="${status_crit} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s}${_lw_conn_s}${_lw_pol_s} ${_lw_date}: ${_lw_msg}\n"
 						;;
 					error|warning)
 						(( _lw_warn_count++ ))
-						_lw_lines+=("${status_warn} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s} ${_lw_date}: ${_lw_msg}")
-						fg_problem_output+="${status_warn} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s} ${_lw_date}: ${_lw_msg}\n"
+						_lw_lines+=("${status_warn} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s}${_lw_conn_s}${_lw_pol_s} ${_lw_date}: ${_lw_msg}")
+						fg_problem_output+="${status_warn} - Logwatch ${fg_hostname}: [${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s}${_lw_conn_s}${_lw_pol_s} ${_lw_date}: ${_lw_msg}\n"
 						;;
 				esac
 			else
 				# Filter mode: collect all matches; thresholds applied after loop
-				_lw_lines+=("[${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s} ${_lw_date}: ${_lw_msg}")
+				_lw_lines+=("[${_lw_t}][${_lw_level}]${_lw_eid_s}${_lw_act_s}${_lw_conn_s}${_lw_pol_s} ${_lw_date}: ${_lw_msg}")
 			fi
 		done < <(echo "${_lw_buf}" | "${JQ}" --unbuffered -r \
 			".results[] | select(${_lw_jq_sel}) |
 			[(.date // \"\"), (.level // \"unknown\"),
 			 (.eventid // 0 | tostring),
 			 (.action // \"\"),
+			 (.srcip // \"\"),
+			 ((.srcport // 0) | tostring),
+			 (.dstip // \"\"),
+			 ((.dstport // 0) | tostring),
+			 ((.policyid // 0) | tostring),
 			 (.msg // .message // \"\")] | join(\"\t\")" 2>/dev/null)
 	done
 
@@ -4185,6 +4301,10 @@ if [[ -n "${enable_logwatch}" && -z "${disable_logwatch}" ]]; then
 				for _lw_l in "${_lw_lines[@]}"; do
 					fg_problem_output+="${_lw_fs} - Logwatch ${fg_hostname}: ${_lw_l}\n"
 					[[ -n "${verbose}" ]] && fg_output+="${_lw_fs} - Logwatch ${fg_hostname}: ${_lw_l}\n"
+				done
+			elif [[ -n "${verbose}" ]]; then
+				for _lw_l in "${_lw_lines[@]}"; do
+					fg_output+="${status_ok} - Logwatch ${fg_hostname}: ${_lw_l}\n"
 				done
 			fi
 		else
