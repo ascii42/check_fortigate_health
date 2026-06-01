@@ -7,6 +7,35 @@
 #
 # Version history:
 # 2026-06-01 Felix Longardt <monitoring@longardt.com>
+# Release: 1.4.44
+#   FortiCloud: add --warn/crit-cloud-sandbox (default 80/90%) for daily sandbox
+#     file quota; --warn/crit-cloud-staging (default 80/90%) for staging disk
+#     usage; --cloud-domain <name> alerts on domain mismatch (case-insensitive);
+#     staging disk line now always shown (not verbose-only); new perfdata:
+#     forticloud_sandbox_pct, forticloud_staging_used_bytes, forticloud_staging_pct
+# Release: 1.4.43
+#   Add -eCloud/--enable-forticloud: FortiCloud connection status, log storage
+#     usage (used/max/pct) with --warn/crit-cloud-log-usage (default 80/90%),
+#     sandbox daily file quota, other cloud service statuses (FAZ/FMG/FSB/FEM);
+#     staging disk size in verbose; perfdata: forticloud_log_used_bytes,
+#     forticloud_log_max_bytes, forticloud_log_pct, forticloud_sandbox_daily
+# Release: 1.4.42
+#   Alerts: add --alerts-vdom <vdom> to query event log from a specific VDOM;
+#     distinguish HTTP 404 (event logging not configured for disk) from other
+#     failures; 404 and "no data" messages now verbose-only to avoid noise
+#     when event logs go to FortiCloud/FortiAnalyzer instead of local disk
+# Release: 1.4.41
+#   SecRating: fix 404 handling - Security Fabric disabled/unconfigured now shows
+#     a useful hint instead of "requires license"; distinguish 404 vs empty results
+#     vs no-data-yet; "not available" lines only shown in verbose mode
+# Release: 1.4.40
+#   Add -eSecRating/--enable-secrating: Security Fabric security rating check;
+#     fetches /monitor/system/security-rating/summary and .../result; shows
+#     overall score, grade, pass/warn/fail counts; high/critical failures emit
+#     CRIT, medium failures emit WARN, low failures and warnings shown in verbose;
+#     per-category breakdown in verbose; --warn-secrating-score/--crit-secrating-score
+#     (default -1=disabled) alert when score drops below threshold;
+#     perfdata: secrating_score, secrating_pass, secrating_warnings, secrating_fail
 # Release: 1.4.39
 #   Resources: add --warn-sessions-pct/--crit-sessions-pct (default 80/90%) to
 #     alert when sessions/session_limit exceeds threshold; requires REST API
@@ -461,7 +490,7 @@
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="1.4.39"
+REVISION="1.4.44"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -648,10 +677,17 @@ Options:
     Disk/storage partition usage; thresholds: --warn-disk / --crit-disk (default 80/90%)
  -eLic,     --enable-license
     FortiCare support and FortiGuard feature license expiry
+ -eCloud,   --enable-forticloud
+    FortiCloud connection status, log storage, sandbox and staging disk usage;
+    --warn/crit-cloud-log-usage (default 80/90%): log storage alert
+    --warn/crit-cloud-sandbox (default 80/90%): daily sandbox file quota alert
+    --warn/crit-cloud-staging (default 80/90%): staging disk usage alert
+    --cloud-domain <name>: alert when connected domain differs from expected
  -eCert,    --enable-certs
     Local certificate expiry (thresholds: --warn-cert / --crit-cert days)
  -eAl,      --enable-alerts
     System event alerts from disk log (emergency/alert/critical)
+    --alerts-vdom <vdom>: query event log from specific VDOM (default: global/root)
  -eUp,      --enable-uptime
     Uptime check: alert when uptime is below threshold (reboot detection)
  -eFirmware,--enable-firmware
@@ -660,6 +696,10 @@ Options:
     Hardware sensors: temperature, voltage, fan speed (appliance-defined thresholds)
  -eFWStats, --enable-fwstats
     Firewall policy statistics: aggregate byte/session/hit counters; --check-policy-cleanup
+ -eSecRating,--enable-secrating
+    Security Fabric security rating: overall score, grade, per-category pass/warn/fail counts,
+    and failed check names; thresholds: --warn-secrating-score/--crit-secrating-score
+    (default -1 = disabled; alert when score drops below N); verbose shows per-check details
  -eLogwatch,--enable-logwatch
     Log event monitoring: fetch recent log entries and alert on matches;
     --logwatch-type <type[,type...]>      log category/categories; comma-sep list
@@ -685,10 +725,10 @@ Options:
  --disable-ntp           --disable-sdwan         --disable-ap
  --disable-switch        --disable-fex           --disable-dhcp
  --disable-ipam          --disable-vdom          --disable-ftk
- --disable-utm           --disable-storage
+ --disable-utm           --disable-storage       --disable-forticloud
  --disable-license       --disable-certs         --disable-alerts
  --disable-uptime        --disable-firmware      --disable-sensors
- --disable-fwstats
+ --disable-fwstats       --disable-logwatch
 
  -w,  --warning  <integer>
     WARNING threshold for disk usage in % (default: 80)
@@ -862,6 +902,9 @@ while [[ -n "${1}" ]]; do
 	-eLic|--enable-license)
 		enable_lic=1
 		;;
+	-eCloud|--enable-forticloud)
+		enable_cloud=1
+		;;
 	-eCert|--enable-certs)
 		enable_cert=1
 		;;
@@ -910,6 +953,9 @@ while [[ -n "${1}" ]]; do
 	-eUTM|--enable-utm)
 		enable_utm=1
 		;;
+	-eSecRating|--enable-secrating)
+		enable_secrating=1
+		;;
 	-eLogwatch|--enable-logwatch)
 		enable_logwatch=1
 		;;
@@ -925,6 +971,35 @@ while [[ -n "${1}" ]]; do
 	--disable-sslvpn)       disable_ssl=1 ;;
 	--disable-storage)      disable_sd=1 ;;
 	--disable-license)      disable_lic=1 ;;
+	--disable-forticloud)   disable_cloud=1 ;;
+	--warn-cloud-log-usage)
+		shift
+		warn_cloud_log_usage="${1}"
+		;;
+	--crit-cloud-log-usage)
+		shift
+		crit_cloud_log_usage="${1}"
+		;;
+	--warn-cloud-sandbox)
+		shift
+		warn_cloud_sandbox="${1}"
+		;;
+	--crit-cloud-sandbox)
+		shift
+		crit_cloud_sandbox="${1}"
+		;;
+	--warn-cloud-staging)
+		shift
+		warn_cloud_staging="${1}"
+		;;
+	--crit-cloud-staging)
+		shift
+		crit_cloud_staging="${1}"
+		;;
+	--cloud-domain)
+		shift
+		cloud_domain_expected="${1}"
+		;;
 	--disable-certs)        disable_cert=1 ;;
 	--disable-alerts)       disable_alerts=1 ;;
 	--disable-uptime)       disable_uptime=1 ;;
@@ -944,6 +1019,15 @@ while [[ -n "${1}" ]]; do
 	--crit-ftk-available)   shift ; crit_ftk_available="${1}" ;;
 	--disable-utm)          disable_utm=1 ;;
 	--disable-logwatch)     disable_logwatch=1 ;;
+	--disable-secrating)    disable_secrating=1 ;;
+	--warn-secrating-score)
+		shift
+		warn_secrating_score="${1}"
+		;;
+	--crit-secrating-score)
+		shift
+		crit_secrating_score="${1}"
+		;;
 	--logwatch-type)
 		shift
 		logwatch_type="${1}"
@@ -1240,6 +1324,10 @@ while [[ -n "${1}" ]]; do
 		shift
 		alert_rows="${1}"
 		;;
+	--alerts-vdom)
+		shift
+		alerts_vdom="${1}"
+		;;
 	--no-perfdata)
 		no_perfdata=1
 		;;
@@ -1280,6 +1368,7 @@ done
 -z "${enable_ssl}"      &&
 -z "${enable_sd}"       &&
 -z "${enable_lic}"      &&
+-z "${enable_cloud}"    &&
 -z "${enable_cert}"     &&
 -z "${enable_alerts}"   &&
 -z "${enable_firmware}" &&
@@ -1334,8 +1423,17 @@ done
 [[ -z "${crit_ap_clients}" ]]   && crit_ap_clients=-1
 [[ -z "${warn_dhcp_usage}" ]]   && warn_dhcp_usage=85
 [[ -z "${crit_dhcp_usage}" ]]   && crit_dhcp_usage=90
-[[ -z "${warn_ipam_usage}" ]]   && warn_ipam_usage=80
-[[ -z "${crit_ipam_usage}" ]]   && crit_ipam_usage=90
+[[ -z "${warn_ipam_usage}" ]]       && warn_ipam_usage=80
+[[ -z "${crit_ipam_usage}" ]]       && crit_ipam_usage=90
+[[ -z "${warn_secrating_score}" ]]  && warn_secrating_score=-1
+[[ -z "${crit_secrating_score}" ]]  && crit_secrating_score=-1
+[[ -z "${warn_cloud_log_usage}" ]]  && warn_cloud_log_usage=80
+[[ -z "${crit_cloud_log_usage}" ]]  && crit_cloud_log_usage=90
+[[ -z "${warn_cloud_sandbox}" ]]    && warn_cloud_sandbox=80
+[[ -z "${crit_cloud_sandbox}" ]]    && crit_cloud_sandbox=90
+[[ -z "${warn_cloud_staging}" ]]    && warn_cloud_staging=80
+[[ -z "${crit_cloud_staging}" ]]    && crit_cloud_staging=90
+[[ -z "${cloud_domain_expected}" ]] && cloud_domain_expected=""
 [[ -z "${dhcp_exclude}" ]]      && dhcp_exclude=""
 [[ -z "${warn_utm_update}" ]]   && warn_utm_update=30
 [[ -z "${crit_utm_update}" ]]   && crit_utm_update=60
@@ -1360,6 +1458,7 @@ done
 [[ -z "${warn_vdom_license}" ]] && warn_vdom_license=80
 [[ -z "${crit_vdom_license}" ]] && crit_vdom_license=90
 [[ -z "${alert_rows}" ]]    && alert_rows=50
+[[ -z "${alerts_vdom}" ]]   && alerts_vdom=""
 [[ -z "${logwatch_type}" ]]    && logwatch_type=""
 [[ -z "${logwatch_subtype}" ]] && logwatch_subtype=""
 [[ -z "${logwatch_device}" ]]  && logwatch_device="disk"
@@ -1602,10 +1701,17 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 }
 [[ ( -n "${enable_lic}"     || -n "${enable_all}" ) && -z "${disable_lic}"     ]] && \
 	_pf_get "${FG_API}/monitor/license/status"                                          license.json
+[[ ( -n "${enable_cloud}"   || -n "${enable_all}" ) && -z "${disable_cloud}"   ]] && {
+	_pf_get "${FG_API}/monitor/license/status"                                          cloud_lic.json
+	_pf_get "${FG_API}/monitor/log/forticloud"                                          cloud_log.json
+}
 [[ ( -n "${enable_cert}"    || -n "${enable_all}" ) && -z "${disable_cert}"    ]] && \
 	_pf_get "${FG_API}/monitor/system/available-certificates"                           certs.json
-[[ ( -n "${enable_alerts}"  || -n "${enable_all}" ) && -z "${disable_alerts}"  ]] && \
-	_pf_get "${FG_API}/log/disk/event/list?rows=${alert_rows}&start=0&logtype=system"   alerts.json
+[[ ( -n "${enable_alerts}"  || -n "${enable_all}" ) && -z "${disable_alerts}"  ]] && {
+	_al_url="${FG_API}/log/disk/event/list?rows=${alert_rows}&start=0&logtype=system"
+	[[ -n "${alerts_vdom}" ]] && _al_url+="&vdom=${alerts_vdom}"
+	_pf_get "${_al_url}" alerts.json
+}
 [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmware}" ]] && \
 	_pf_get "${FG_API}/monitor/system/firmware"                                         firmware.json
 [[ ( -n "${enable_sensors}" || -n "${enable_all}" ) && -z "${disable_sensors}" ]] && \
@@ -1645,8 +1751,12 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 	_pf_get "${FG_API}/monitor/system/ipam/status"                                      ipam_status.json
 	_pf_get "${FG_API}/cmdb/system/ipam"                                                ipam_config.json
 }
-[[ ( -n "${enable_utm}"   || -n "${enable_all}" ) && -z "${disable_utm}"   ]] && \
+[[ ( -n "${enable_utm}"       || -n "${enable_all}" ) && -z "${disable_utm}"       ]] && \
 	_pf_get "${FG_API}/monitor/ips/anomaly"                                             dos_rules.json
+[[ -n "${enable_secrating}" && -z "${disable_secrating}" ]] && {
+	_pf_get "${FG_API}/monitor/system/security-rating/summary"                          secrating_summary.json
+	_pf_get "${FG_API}/monitor/system/security-rating/result"                           secrating_result.json
+}
 [[ -n "${enable_logwatch}" && -z "${disable_logwatch}" ]] && {
 	if [[ -z "${logwatch_type}" ]]; then
 		if [[ "${logwatch_device}" == "memory" ]]; then
@@ -3780,6 +3890,150 @@ if [[ ( -n "${enable_lic}" || -n "${enable_all}" ) && -z "${disable_lic}" ]]; th
 fi
 
 # ---------------------------------------------------------------------------
+# FortiCloud Check
+# ---------------------------------------------------------------------------
+if [[ ( -n "${enable_cloud}" || -n "${enable_all}" ) && -z "${disable_cloud}" ]]; then
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="FortiCloud:\n---------------------------------------\n"
+	fi
+
+	_cloud_lic_buf=$(cat "${_pf}/cloud_lic.json" 2>/dev/null)
+	_cloud_log_buf=$(cat "${_pf}/cloud_log.json" 2>/dev/null)
+
+	if [[ -n "${_cloud_lic_buf}" && "${_cloud_lic_buf}" =~ '"results"' ]]; then
+		# Connection status
+		_fc_status=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud.status // ""' 2>/dev/null)
+		_fc_account=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud.account // ""' 2>/dev/null)
+		_fc_domain=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud.domain // ""' 2>/dev/null)
+
+		_fc_state="${status_ok}"
+		if [[ "${_fc_status}" != "cloud_logged_in" && -n "${_fc_status}" ]]; then
+			_fc_state="${status_warn}"
+			fg_problem_output+="${status_warn} - FortiCloud ${fg_hostname}: not logged in (status: ${_fc_status})\n"
+		fi
+		# Domain check
+		if [[ -n "${cloud_domain_expected}" && -n "${_fc_domain}" && "${_fc_domain}" != "null" ]]; then
+			if [[ "${_fc_domain^^}" != "${cloud_domain_expected^^}" ]]; then
+				_fc_state="${status_warn}"
+				fg_problem_output+="${status_warn} - FortiCloud ${fg_hostname}: domain mismatch: got '${_fc_domain}', expected '${cloud_domain_expected}'\n"
+			fi
+		fi
+		_fc_acct_s="" ; [[ -n "${_fc_account}" && "${_fc_account}" != "null" ]] && _fc_acct_s=" | account: ${_fc_account}"
+		_fc_dom_s=""  ; [[ -n "${_fc_domain}"  && "${_fc_domain}"  != "null" ]] && _fc_dom_s=" | domain: ${_fc_domain}"
+		fg_output+="${_fc_state} - FortiCloud ${fg_hostname}: ${_fc_status:-unknown}${_fc_acct_s}${_fc_dom_s}\n"
+
+		# Log storage usage
+		_fcl_used=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_logging.used_bytes // ""' 2>/dev/null)
+		_fcl_max=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_logging.max_bytes // ""' 2>/dev/null)
+		_fcl_ret=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_logging.log_retention_days // ""' 2>/dev/null)
+		_fcl_lstatus=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_logging.status // ""' 2>/dev/null)
+
+		_fcl_pct=0
+		if [[ "${_fcl_used}" =~ ^[0-9]+$ && "${_fcl_max}" =~ ^[0-9]+$ && "${_fcl_max}" -gt 0 ]]; then
+			_fcl_pct=$(( _fcl_used * 100 / _fcl_max ))
+			_fcl_used_gb=$(echo "scale=1; ${_fcl_used}/1073741824" | bc 2>/dev/null)
+			_fcl_max_tb=$(echo "scale=1; ${_fcl_max}/1099511627776" | bc 2>/dev/null)
+			_fcl_ret_s="" ; [[ -n "${_fcl_ret}" && "${_fcl_ret}" != "null" ]] && _fcl_ret_s=" | retention: ${_fcl_ret}d"
+			_fcl_state="${status_ok}"
+			if (( _fcl_pct >= crit_cloud_log_usage )) 2>/dev/null; then
+				_fcl_state="${status_crit}"
+				fg_problem_output+="${status_crit} - FortiCloud ${fg_hostname}: log storage ${_fcl_pct}% CRITICAL (threshold: ${crit_cloud_log_usage}%)\n"
+			elif (( _fcl_pct >= warn_cloud_log_usage )) 2>/dev/null; then
+				_fcl_state="${status_warn}"
+				fg_problem_output+="${status_warn} - FortiCloud ${fg_hostname}: log storage ${_fcl_pct}% WARNING (threshold: ${warn_cloud_log_usage}%)\n"
+			fi
+			fg_output+="${_fcl_state} - FortiCloud ${fg_hostname}: log storage ${_fcl_used_gb}GB / ${_fcl_max_tb}TB (${_fcl_pct}%) | license: ${_fcl_lstatus}${_fcl_ret_s}\n"
+			fg_perf+=" forticloud_log_used_bytes=${_fcl_used}"
+			fg_perf+=" forticloud_log_max_bytes=${_fcl_max}"
+			fg_perf+=" forticloud_log_pct=${_fcl_pct};${warn_cloud_log_usage};${crit_cloud_log_usage};0;100"
+		fi
+
+		# Sandbox stats
+		_fcs_status=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_sandbox.status // ""' 2>/dev/null)
+		_fcs_daily=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_sandbox.files_uploaded_daily // ""' 2>/dev/null)
+		_fcs_max=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+			'.results.forticloud_sandbox.max_files_daily // ""' 2>/dev/null)
+		if [[ -n "${_fcs_status}" && "${_fcs_status}" != "null" && "${_fcs_status}" != "no_license" ]]; then
+			_fcs_pct=0 ; _fcs_state="${status_ok}"
+			if [[ "${_fcs_daily}" =~ ^[0-9]+$ && "${_fcs_max}" =~ ^[0-9]+$ && "${_fcs_max}" -gt 0 ]]; then
+				_fcs_pct=$(( _fcs_daily * 100 / _fcs_max ))
+				if (( _fcs_pct >= crit_cloud_sandbox )) 2>/dev/null; then
+					_fcs_state="${status_crit}"
+					fg_problem_output+="${status_crit} - FortiCloud ${fg_hostname}: sandbox daily quota ${_fcs_pct}% CRITICAL (${_fcs_daily}/${_fcs_max}, threshold: ${crit_cloud_sandbox}%)\n"
+				elif (( _fcs_pct >= warn_cloud_sandbox )) 2>/dev/null; then
+					_fcs_state="${status_warn}"
+					fg_problem_output+="${status_warn} - FortiCloud ${fg_hostname}: sandbox daily quota ${_fcs_pct}% WARNING (${_fcs_daily}/${_fcs_max}, threshold: ${warn_cloud_sandbox}%)\n"
+				fi
+			fi
+			_fcs_quota_s=""
+			[[ "${_fcs_daily}" =~ ^[0-9]+$ && "${_fcs_max}" =~ ^[0-9]+$ ]] && \
+				_fcs_quota_s=" | files today: ${_fcs_daily}/${_fcs_max} (${_fcs_pct}%)"
+			fg_output+="${_fcs_state} - FortiCloud ${fg_hostname}: sandbox ${_fcs_status}${_fcs_quota_s}\n"
+			[[ "${_fcs_daily}" =~ ^[0-9]+$ ]] && \
+				fg_perf+=" forticloud_sandbox_daily=${_fcs_daily};${warn_cloud_sandbox};${crit_cloud_sandbox}"
+			[[ "${_fcs_pct}" =~ ^[0-9]+$ && "${_fcs_max}" -gt 0 ]] && \
+				fg_perf+=" forticloud_sandbox_pct=${_fcs_pct};${warn_cloud_sandbox};${crit_cloud_sandbox};0;100"
+		fi
+
+		# Other cloud service statuses (verbose: show all; non-verbose: only problems)
+		for _cs in fortianalyzer_cloud fortimanager_cloud fortisandbox_cloud fortiems_cloud; do
+			_cs_status=$(echo "${_cloud_lic_buf}" | "${JQ}" --unbuffered -r \
+				--arg svc "${_cs}" '.results[$svc].status // ""' 2>/dev/null)
+			[[ -z "${_cs_status}" || "${_cs_status}" == "null" ]] && continue
+			_cs_label="${_cs//_/ }"
+			if [[ "${_cs_status}" == "no_license" ]]; then
+				[[ -n "${verbose}" ]] && \
+					fg_output+="${status_ok} - FortiCloud ${fg_hostname}: ${_cs_label}: not licensed\n"
+			elif [[ "${_cs_status}" == "licensed" || "${_cs_status}" == "free_license" ]]; then
+				fg_output+="${status_ok} - FortiCloud ${fg_hostname}: ${_cs_label}: ${_cs_status}\n"
+			else
+				fg_output+="${status_warn} - FortiCloud ${fg_hostname}: ${_cs_label}: ${_cs_status}\n"
+			fi
+		done
+
+		# Staging disk from monitor/log/forticloud
+		if [[ -n "${_cloud_log_buf}" && "${_cloud_log_buf}" =~ '"results"' ]]; then
+			_fcld_quota=$(echo "${_cloud_log_buf}" | "${JQ}" --unbuffered -r \
+				'.results.disk.quota // ""' 2>/dev/null)
+			_fcld_used=$(echo "${_cloud_log_buf}" | "${JQ}" --unbuffered -r \
+				'.results.disk.used // ""' 2>/dev/null)
+			if [[ "${_fcld_quota}" =~ ^[0-9]+$ && "${_fcld_quota}" -gt 0 && "${_fcld_used}" =~ ^[0-9]+$ ]]; then
+				_fcld_pct=$(( _fcld_used * 100 / _fcld_quota ))
+				_fcld_used_kb=$(( _fcld_used / 1024 ))
+				_fcld_quota_mb=$(( _fcld_quota / 1048576 ))
+				_fcld_state="${status_ok}"
+				if (( _fcld_pct >= crit_cloud_staging )) 2>/dev/null; then
+					_fcld_state="${status_crit}"
+					fg_problem_output+="${status_crit} - FortiCloud ${fg_hostname}: staging disk ${_fcld_pct}% CRITICAL (threshold: ${crit_cloud_staging}%)\n"
+				elif (( _fcld_pct >= warn_cloud_staging )) 2>/dev/null; then
+					_fcld_state="${status_warn}"
+					fg_problem_output+="${status_warn} - FortiCloud ${fg_hostname}: staging disk ${_fcld_pct}% WARNING (threshold: ${warn_cloud_staging}%)\n"
+				fi
+				fg_output+="${_fcld_state} - FortiCloud ${fg_hostname}: staging disk ${_fcld_used_kb}KB / ${_fcld_quota_mb}MB (${_fcld_pct}%)\n"
+				fg_perf+=" forticloud_staging_used_bytes=${_fcld_used}"
+				fg_perf+=" forticloud_staging_pct=${_fcld_pct};${warn_cloud_staging};${crit_cloud_staging};0;100"
+			fi
+		fi
+	else
+		fg_output+="${status_unkn} - FortiCloud ${fg_hostname}: failed to retrieve license status\n"
+		fg_problem_output+="${status_unkn} - FortiCloud ${fg_hostname}: failed to retrieve license status\n"
+	fi
+
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="---------------------------------------\n\n"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
 # Certificate Expiry Check
 # ---------------------------------------------------------------------------
 if [[ ( -n "${enable_cert}" || -n "${enable_all}" ) && -z "${disable_cert}" ]]; then
@@ -3904,7 +4158,9 @@ if [[ ( -n "${enable_alerts}" || -n "${enable_all}" ) && -z "${disable_alerts}" 
 
 	_al_buffer=$(cat "${_pf}/alerts.json" 2>/dev/null)
 
-	if [[ -n "${_al_buffer}" && "${_al_buffer}" =~ '"results"' ]]; then
+	_al_http=$(echo "${_al_buffer}" | "${JQ}" --unbuffered -r '.http_status // ""' 2>/dev/null)
+
+	if [[ -n "${_al_buffer}" && "${_al_buffer}" =~ '"results"' && "${_al_http}" != "404" ]]; then
 		_al_crit=0
 		_al_warn=0
 		_al_info=0
@@ -3945,8 +4201,14 @@ if [[ ( -n "${enable_alerts}" || -n "${enable_all}" ) && -z "${disable_alerts}" 
 		fg_perf+=" alerts_crit=${_al_crit} alerts_warn=${_al_warn}"
 
 		unset _al_levels _al_msgs _al_times
+	elif [[ "${_al_http}" == "404" ]]; then
+		_al_vdom_hint="" ; [[ -n "${alerts_vdom}" ]] && _al_vdom_hint=" (vdom: ${alerts_vdom})"
+		[[ -n "${verbose}" ]] && \
+			fg_output+="${status_ok} - Alerts ${fg_hostname}: event log not on disk${_al_vdom_hint} - event logging to disk may not be configured (check log.disk/filter)\n"
+		fg_perf+=" alerts_crit=0 alerts_warn=0"
 	else
-		fg_output+="${status_ok} - Alerts ${fg_hostname}: disk log not available or no events\n"
+		[[ -n "${verbose}" ]] && \
+			fg_output+="${status_ok} - Alerts ${fg_hostname}: disk log not available or no events\n"
 		fg_perf+=" alerts_crit=0 alerts_warn=0"
 	fi
 
@@ -4222,6 +4484,126 @@ if [[ ( -n "${enable_fwstats}" || -n "${enable_all}" ) && -z "${disable_fwstats}
 		[[ -n "${check_policy_cleanup}" ]] && fg_perf+=" fw_never_hit_policies=${_fws_never_hit}"
 	else
 		fg_output+="${status_ok} - FW Stats ${fg_hostname}: endpoint not available\n"
+	fi
+
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="---------------------------------------\n\n"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Security Rating Check
+# ---------------------------------------------------------------------------
+if [[ -n "${enable_secrating}" && -z "${disable_secrating}" ]]; then
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="Security Rating:\n---------------------------------------\n"
+	fi
+
+	_sr_sum_buf=$(cat "${_pf}/secrating_summary.json" 2>/dev/null)
+	_sr_res_buf=$(cat "${_pf}/secrating_result.json"  2>/dev/null)
+
+	# Determine availability: 404 = Security Fabric not enabled; empty/other error = unknown
+	_sr_http=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r '.http_status // ""' 2>/dev/null)
+	_sr_status_api=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r '.status // ""' 2>/dev/null)
+	_sr_results_type=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r 'if .results | type == "object" and (. | keys | length) > 0 then "object" elif .results | type == "array" then "array" else "none" end' 2>/dev/null)
+
+	if [[ "${_sr_status_api}" == "success" && "${_sr_results_type}" == "object" ]]; then
+		# Overall totals — try .results.total first, then .results directly
+		_sr_score=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r \
+			'.results.total.score // .results.score // ""' 2>/dev/null)
+		_sr_grade=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r \
+			'.results.total.score_letter // .results.score_letter // ""' 2>/dev/null)
+		_sr_pass=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r \
+			'.results.total.pass // .results.pass // 0' 2>/dev/null)
+		_sr_warn=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r \
+			'.results.total.warning // .results.warning // 0' 2>/dev/null)
+		_sr_fail=$(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r \
+			'.results.total.fail // .results.fail // 0' 2>/dev/null)
+
+		_sr_state="${status_ok}"
+		# Score threshold (lower is worse; alert when score < threshold)
+		if [[ "${_sr_score}" =~ ^[0-9]+$ ]]; then
+			if (( crit_secrating_score >= 0 && _sr_score < crit_secrating_score )) 2>/dev/null; then
+				_sr_state="${status_crit}"
+				fg_problem_output+="${status_crit} - Security Rating ${fg_hostname}: score ${_sr_score} CRITICAL (threshold: <${crit_secrating_score})\n"
+			elif (( warn_secrating_score >= 0 && _sr_score < warn_secrating_score )) 2>/dev/null; then
+				_sr_state="${status_warn}"
+				fg_problem_output+="${status_warn} - Security Rating ${fg_hostname}: score ${_sr_score} WARNING (threshold: <${warn_secrating_score})\n"
+			fi
+		fi
+
+		_sr_grade_s="" ; [[ -n "${_sr_grade}" && "${_sr_grade}" != "null" ]] && _sr_grade_s=" (${_sr_grade})"
+		_sr_score_s="" ; [[ -n "${_sr_score}" && "${_sr_score}" != "null" ]] && _sr_score_s=" | score: ${_sr_score}${_sr_grade_s}"
+		_sr_counts_s=" | pass: ${_sr_pass} | warn: ${_sr_warn} | fail: ${_sr_fail}"
+		fg_output+="${_sr_state} - Security Rating ${fg_hostname}:${_sr_score_s}${_sr_counts_s}\n"
+
+		# Failed checks — collect names and severities
+		if [[ -n "${_sr_res_buf}" && "${_sr_res_buf}" =~ '"results"' ]]; then
+			declare -a _sr_failed_high _sr_failed_med _sr_failed_low _sr_warned
+
+			while IFS=$'\t' read -r _sr_name _sr_status _sr_sev _sr_cat; do
+				case "${_sr_status}" in
+					fail)
+						case "${_sr_sev}" in
+							critical|high) _sr_failed_high+=("${_sr_name} [${_sr_cat}]") ;;
+							medium)        _sr_failed_med+=("${_sr_name} [${_sr_cat}]") ;;
+							*)             _sr_failed_low+=("${_sr_name} [${_sr_cat}]") ;;
+						esac
+						;;
+					warning) _sr_warned+=("${_sr_name} [${_sr_cat}]") ;;
+				esac
+			done < <(echo "${_sr_res_buf}" | "${JQ}" --unbuffered -r \
+				'(.results // [])[] | select(.status == "fail" or .status == "warning") |
+				[(.name // "unknown"), (.status // ""), (.severity // "low"), (.category // "")] | @tsv' \
+				2>/dev/null)
+
+			# High/critical failures always emit a CRIT problem line
+			for _sr_item in "${_sr_failed_high[@]}"; do
+				[[ "${_sr_state}" != "${status_crit}" ]] && _sr_state="${status_crit}"
+				fg_problem_output+="${status_crit} - Security Rating ${fg_hostname}: FAIL ${_sr_item}\n"
+			done
+			# Medium failures emit a WARN problem line (unless already crit)
+			for _sr_item in "${_sr_failed_med[@]}"; do
+				[[ "${_sr_state}" == "${status_ok}" ]] && _sr_state="${status_warn}"
+				fg_problem_output+="${status_warn} - Security Rating ${fg_hostname}: FAIL ${_sr_item}\n"
+			done
+
+			if [[ -n "${verbose}" ]]; then
+				for _sr_item in "${_sr_failed_low[@]}"; do
+					fg_output+="${status_warn} - Security Rating ${fg_hostname}: FAIL ${_sr_item}\n"
+				done
+				for _sr_item in "${_sr_warned[@]}"; do
+					fg_output+="${status_warn} - Security Rating ${fg_hostname}: WARN ${_sr_item}\n"
+				done
+
+				# Per-category breakdown from summary
+				while IFS=$'\t' read -r _sr_cat_name _sr_cp _sr_cw _sr_cf _sr_cs; do
+					[[ "${_sr_cat_name}" == "total" || "${_sr_cat_name}" == "null" ]] && continue
+					_sr_cs_s="" ; [[ "${_sr_cs}" =~ ^[0-9]+$ ]] && _sr_cs_s=" score: ${_sr_cs} |"
+					fg_output+="${status_ok} - Security Rating ${fg_hostname}: [${_sr_cat_name}]${_sr_cs_s} pass: ${_sr_cp} | warn: ${_sr_cw} | fail: ${_sr_cf}\n"
+				done < <(echo "${_sr_sum_buf}" | "${JQ}" --unbuffered -r \
+					'.results | to_entries[] | [.key, (.value.pass // 0), (.value.warning // 0), (.value.fail // 0), (.value.score // "")] | @tsv' \
+					2>/dev/null)
+			fi
+
+			unset _sr_failed_high _sr_failed_med _sr_failed_low _sr_warned
+		fi
+
+		# Perfdata
+		[[ "${_sr_score}" =~ ^[0-9]+$ ]] && \
+			fg_perf+=" secrating_score=${_sr_score};${warn_secrating_score};${crit_secrating_score};0;100"
+		[[ "${_sr_pass}"  =~ ^[0-9]+$ ]] && fg_perf+=" secrating_pass=${_sr_pass}"
+		[[ "${_sr_warn}"  =~ ^[0-9]+$ ]] && fg_perf+=" secrating_warnings=${_sr_warn}"
+		[[ "${_sr_fail}"  =~ ^[0-9]+$ ]] && fg_perf+=" secrating_fail=${_sr_fail}"
+	elif [[ "${_sr_http}" == "404" || "${_sr_status_api}" == "error" ]]; then
+		[[ -n "${verbose}" ]] && \
+			fg_output+="${status_ok} - Security Rating ${fg_hostname}: not available (Security Fabric not configured - enable under Security Fabric > Settings)\n"
+	elif [[ "${_sr_results_type}" == "array" ]]; then
+		[[ -n "${verbose}" ]] && \
+			fg_output+="${status_ok} - Security Rating ${fg_hostname}: no rating data yet (trigger a run under Security Fabric > Security Rating)\n"
+	else
+		[[ -n "${verbose}" ]] && \
+			fg_output+="${status_ok} - Security Rating ${fg_hostname}: no data returned\n"
 	fi
 
 	if [[ -n "${verbose}" ]]; then
