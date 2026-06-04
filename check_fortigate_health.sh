@@ -6,7 +6,16 @@
 #   Felix Longardt <monitoring@longardt.com>
 #
 # Version history:
-# 2026-06-01 Felix Longardt <monitoring@longardt.com>
+# 2026-06-04 Felix Longardt <monitoring@longardt.com>
+# Release: 1.4.47
+#   Firmware: FortiAP per-AP firmware lines in Firmware section: current version from
+#     os_version (managed_ap), update check cross-referenced per model from
+#     /monitor/wifi/firmware; patch/minor/major WARN with correct update type label;
+#     FortiSwitch current firmware version per switch in verbose (no update API);
+#     FortiExtender current firmware version per extender in verbose (no update API);
+#     data fetched in firmware prefetch block so -eFirmware alone suffices (without -eAP/-eSW/-eFEX)
+#   Firmware: add --firmware-blacklist <v1>[,v2,...] to exclude specific versions from
+#     update warnings (FG + FortiAP); substring match; blacklisted versions shown verbose-only
 # Release: 1.4.46
 #   Firmware: --no-firmware-minor-warn now also suppresses patch warnings so
 #     only major version updates emit WARN (hierarchical: minor suppresses
@@ -500,7 +509,7 @@
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="1.4.46"
+REVISION="1.4.47"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -661,10 +670,12 @@ Options:
     --sdwan-vdom <name>: query SD-WAN from a specific vdom (default: root)
  -eAP,      --enable-ap
     FortiAP managed APs: status, clients, per-radio detail; thresholds: --warn/crit-ap-down/clients
+    (AP firmware update info shown in -eFirmware section when both -eAP and -eFirmware are active)
  -eSW,      --enable-switch
-    FortiSwitch managed switches: status; thresholds: --warn/crit-sw-down
+    FortiSwitch managed switches: status, firmware version (verbose); thresholds: --warn/crit-sw-down
  -eFEX,     --enable-fex
     FortiExtender managed extenders: status
+    (FEX firmware version shown in -eFirmware verbose section)
  -eDHCP,    --enable-dhcp
     DHCP pool usage per server (pool size via ip-range, active leases); --warn/crit-dhcp-usage (%)
     Exclude specific pools: --exclude-dhcp "iface1,iface2"
@@ -701,11 +712,15 @@ Options:
  -eUp,      --enable-uptime
     Uptime check: alert when uptime is below threshold (reboot detection)
  -eFirmware,--enable-firmware
-    Firmware version: installed version; separate WARN for patch/minor/major GA updates
+    Firmware version: installed FG version; separate WARN for patch/minor/major GA updates;
+    FortiAP per-model update check (data from -eAP) with WARN when update available;
+    FortiSwitch current firmware version in verbose (data from -eSW)
     --no-firmware-updates-warn: suppress all update warnings (informational only)
     --no-firmware-major-warn:   suppress WARN for major version (e.g. v7 -> v8)
     --no-firmware-minor-warn:   suppress WARN for minor and patch updates; only major warns
     --firmware-mature-only:     only warn on maturity=M (Mature) releases; skips Fresh/Beta
+    --firmware-blacklist <v1>[,v2,...]: skip specific versions from update warnings
+                                (FG and FortiAP); comma-separated; partial match supported
  -eSensor,  --enable-sensors
     Hardware sensors: temperature, voltage, fan speed (appliance-defined thresholds)
  -eFWStats, --enable-fwstats
@@ -785,6 +800,10 @@ Options:
  --firmware-show-all
     In verbose mode, list all available firmware versions including older ones
     (default: only versions newer than the installed version are shown)
+ --firmware-blacklist <versions>
+    Comma-separated list of firmware versions to exclude from update warnings.
+    Applied to both FG and FortiAP firmware. Partial match (substring) is used,
+    so "7.6.5" matches "7.6.5-build1234" and "FOS-v7.6.5" alike.
 
  --ifup <list>
     Comma-separated interfaces that MUST be link-up - CRITICAL if any are down
@@ -1085,6 +1104,7 @@ while [[ -n "${1}" ]]; do
 	--no-firmware-minor-warn)    no_firmware_minor_warn=1 ;;
 	--firmware-mature-only)      firmware_mature_only=1 ;;
 	--firmware-show-all)         firmware_show_all=1 ;;
+	--firmware-blacklist)        shift ; firmware_blacklist="${1}" ;;
 	# Thresholds
 	-w|--warning)
 		shift
@@ -1723,8 +1743,18 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 	[[ -n "${alerts_vdom}" ]] && _al_url+="&vdom=${alerts_vdom}"
 	_pf_get "${_al_url}" alerts.json
 }
-[[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmware}" ]] && \
+[[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmware}" ]] && {
 	_pf_get "${FG_API}/monitor/system/firmware"                                         firmware.json
+	# Component firmware: fetch AP/SW/FEX data when not already fetched by their own checks
+	[[ -z "${disable_ap}" ]] && \
+		_pf_get "${FG_API}/monitor/wifi/firmware"                                       wifi_firmware.json
+	[[ -z "${disable_ap}" && -z "${enable_ap}" && -z "${enable_all}" ]] && \
+		_pf_get "${FG_API}/monitor/wifi/managed_ap"                                     managed_ap.json
+	[[ -z "${disable_sw}" && -z "${enable_sw}" && -z "${enable_all}" ]] && \
+		_pf_get "${FG_API}/monitor/switch-controller/managed-switch"                    managed_sw.json
+	[[ -z "${disable_fex}" && -z "${enable_fex}" && -z "${enable_all}" ]] && \
+		_pf_get "${FG_API}/monitor/extension-controller/fortiextender"                  fex.json
+}
 [[ ( -n "${enable_sensors}" || -n "${enable_all}" ) && -z "${disable_sensors}" ]] && \
 	_pf_get "${FG_API}/monitor/system/sensor-info"                                      sensors.json
 [[ ( -n "${enable_fwstats}" || -n "${enable_all}" ) && -z "${disable_fwstats}" ]] && {
@@ -2972,18 +3002,21 @@ if [[ ( -n "${enable_sw}" || -n "${enable_all}" ) && -z "${disable_sw}" ]]; then
 	if [[ -n "${_sw_buf}" && "${_sw_buf}" =~ '"results"' ]]; then
 		_sw_total=0 ; _sw_up=0 ; _sw_down=0
 		declare -a _sw_dn_lines
-		while IFS=$'\t' read -r _sw_name _sw_serial _sw_status; do
+		while IFS=$'\t' read -r _sw_name _sw_serial _sw_status _sw_fw; do
 			(( _sw_total++ ))
 			if [[ "${_sw_status}" == "connected" || "${_sw_status}" == "authorized" ]]; then
 				(( _sw_up++ ))
-				[[ -n "${verbose}" ]] && \
-					fg_output+="${status_ok} - Switch ${fg_hostname}/${_sw_name}: ${_sw_status}\n"
+				if [[ -n "${verbose}" ]]; then
+					_sw_fw_s="" ; [[ -n "${_sw_fw}" && "${_sw_fw}" != "null" && "${_sw_fw}" != "" ]] && _sw_fw_s=" | fw: ${_sw_fw}"
+					fg_output+="${status_ok} - Switch ${fg_hostname}/${_sw_name}: ${_sw_status}${_sw_fw_s}\n"
+				fi
 			else
 				(( _sw_down++ ))
 				_sw_dn_lines+=("Switch ${fg_hostname}/${_sw_name} (${_sw_serial}): ${_sw_status}")
 			fi
 		done < <(echo "${_sw_buf}" | "${JQ}" --unbuffered -r \
-			'.results[] | [(.name // .switch_id), (.serial // "unknown"), (.status // "unknown")] | join("\t")' 2>/dev/null)
+			'.results[] | [(.name // .switch_id), (.serial // "unknown"), (.status // "unknown"),
+			 (.os_version // .firmware_version // .version // "")] | join("\t")' 2>/dev/null)
 
 		_sw_sev="${status_ok}"
 		if (( crit_sw_down >= 0 && _sw_down >= crit_sw_down )) 2>/dev/null && [[ "${_sw_down}" -gt 0 ]]; then
@@ -4238,6 +4271,14 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 
 	_fw_buffer=$(cat "${_pf}/firmware.json" 2>/dev/null)
 
+	# Blacklist JSON array (used for FG, AP, SW, FEX firmware checks)
+	_fw_bl_json="[]"
+	if [[ -n "${firmware_blacklist}" ]]; then
+		_fw_bl_json=$(printf '%s' "${firmware_blacklist}" | "${JQ}" -Rc \
+			'split(",") | map(ltrimstr(" ") | rtrimstr(" ")) | map(select(length > 0))' 2>/dev/null)
+		[[ -z "${_fw_bl_json}" ]] && _fw_bl_json="[]"
+	fi
+
 	if [[ -n "${_fw_buffer}" && "${_fw_buffer}" =~ '"results"' ]]; then
 		_fw_installed=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
 			'.results.current.version // "unknown"' 2>/dev/null)
@@ -4265,26 +4306,31 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 		# Latest GA patch update (same major.minor, higher patch)
 		_fw_new_patch=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
 			--argjson maj "${_fw_cur_major}" --argjson min "${_fw_cur_minor}" --argjson pat "${_fw_cur_patch}" \
-			--argjson mf "${_fw_mat_filter}" '
+			--argjson bl "${_fw_bl_json}" '
 			[(.results.available // [])[] |
 				select(."release-type" == "GA" and .major == $maj and .minor == $min and .patch > $pat) |
-				select('"${_fw_mat_filter}"')] |
+				select('"${_fw_mat_filter}"') |
+				select(.version as $v | $bl | all(. as $b | ($v | index($b)) == null))] |
 			sort_by(.patch) | last | .version // ""' 2>/dev/null)
 
 		# Latest GA minor update (same major, higher minor)
 		_fw_new_minor=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
 			--argjson maj "${_fw_cur_major}" --argjson min "${_fw_cur_minor}" \
-			'[(.results.available // [])[] |
+			--argjson bl "${_fw_bl_json}" '
+			[(.results.available // [])[] |
 				select(."release-type" == "GA" and .major == $maj and .minor > $min) |
-				select('"${_fw_mat_filter}"')] |
+				select('"${_fw_mat_filter}"') |
+				select(.version as $v | $bl | all(. as $b | ($v | index($b)) == null))] |
 			sort_by([.minor,.patch]) | last | .version // ""' 2>/dev/null)
 
 		# Latest GA major update (higher major)
 		_fw_new_major=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
 			--argjson maj "${_fw_cur_major}" \
-			'[(.results.available // [])[] |
+			--argjson bl "${_fw_bl_json}" '
+			[(.results.available // [])[] |
 				select(."release-type" == "GA" and .major > $maj) |
-				select('"${_fw_mat_filter}"')] |
+				select('"${_fw_mat_filter}"') |
+				select(.version as $v | $bl | all(. as $b | ($v | index($b)) == null))] |
 			sort_by([.major,.minor,.patch]) | last | .version // ""' 2>/dev/null)
 
 		_fw_state="${status_ok}"
@@ -4347,6 +4393,138 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 		fi
 	else
 		fg_output+="${status_ok} - Firmware ${fg_hostname}: endpoint not available\n"
+	fi
+
+	# ---------------------------------------------------------------------------
+	# FortiAP firmware: per-AP current version + per-model update check
+	# ---------------------------------------------------------------------------
+	_ap_mgd_buf=$(cat "${_pf}/managed_ap.json" 2>/dev/null)
+	_ap_wf_buf=$(cat  "${_pf}/wifi_firmware.json" 2>/dev/null)
+
+	if [[ -n "${_ap_mgd_buf}" && "${_ap_mgd_buf}" =~ '"results"' ]]; then
+		# Load per-model update data from wifi_firmware.json into associative arrays
+		declare -A _apfw_latest_v _apfw_avail_v _apfw_err_v
+		if [[ -n "${_ap_wf_buf}" && "${_ap_wf_buf}" =~ '"models"' ]]; then
+			while IFS=$'\t' read -r _wfm _wflv _wfav _wfer; do
+				_apfw_latest_v["${_wfm}"]="${_wflv}"
+				_apfw_avail_v["${_wfm}"]="${_wfav}"
+				_apfw_err_v["${_wfm}"]="${_wfer}"
+			done < <(echo "${_ap_wf_buf}" | "${JQ}" --unbuffered -r '
+				.results.models | to_entries[] |
+				[.key,
+				 (.value.latest_version // ""),
+				 ((.value.available // false) | tostring),
+				 (.value.error // "")] | join("\t")' 2>/dev/null)
+		fi
+
+		# Per-AP firmware lines
+		while IFS=$'\t' read -r _apfw_name _apfw_os; do
+			[[ -z "${_apfw_os}" ]] && continue
+
+			# Parse os_version: "MODEL-vX.Y.Z-buildNNNN" → model, version, build
+			_apfw_model="${_apfw_os%%-v*}"
+			_apfw_raw="${_apfw_os#*-v}"
+			[[ "${_apfw_raw}" == "${_apfw_os}" ]] && { _apfw_model="" ; _apfw_raw="${_apfw_os#v}" ; }
+			_apfw_cver="${_apfw_raw%-build*}"
+			_apfw_cbld="${_apfw_raw##*-build}"
+			[[ "${_apfw_cbld}" == "${_apfw_raw}" ]] && _apfw_cbld=""
+			_apfw_cur_s="v${_apfw_cver}"
+			[[ -n "${_apfw_cbld}" ]] && _apfw_cur_s+=" build ${_apfw_cbld}"
+
+			fg_output+="${status_ok} - Firmware AP ${_apfw_name}: current: ${_apfw_cur_s}\n"
+
+			# Cross-reference with wifi_firmware data for this model
+			_apfw_lv="${_apfw_latest_v["${_apfw_model}"]:-}"
+			_apfw_av="${_apfw_avail_v["${_apfw_model}"]:-}"
+			_apfw_er="${_apfw_err_v["${_apfw_model}"]:-}"
+
+			if [[ "${_apfw_av}" == "true" && -n "${_apfw_lv}" && "${_apfw_lv}" != "null" ]]; then
+				# Parse latest version (handles "MODEL-vX.Y.Z-buildN" or "X.Y.Z-buildN")
+				_apfw_lraw="${_apfw_lv#*-v}"
+				[[ "${_apfw_lraw}" == "${_apfw_lv}" ]] && _apfw_lraw="${_apfw_lv#v}"
+				_apfw_lver="${_apfw_lraw%-build*}"
+				_apfw_lbld="${_apfw_lraw##*-build}"
+				[[ "${_apfw_lbld}" == "${_apfw_lraw}" ]] && _apfw_lbld=""
+				_apfw_lat_s="v${_apfw_lver}"
+				[[ -n "${_apfw_lbld}" ]] && _apfw_lat_s+=" (build ${_apfw_lbld})"
+
+				# Determine update type by comparing version numbers
+				IFS='.' read -r _acv_maj _acv_min _acv_pat <<< "${_apfw_cver}"
+				IFS='.' read -r _alv_maj _alv_min _alv_pat <<< "${_apfw_lver}"
+				_apfw_uptype="update"
+				if [[ "${_alv_maj}" =~ ^[0-9]+$ && "${_acv_maj}" =~ ^[0-9]+$ ]]; then
+					if   (( _alv_maj >  _acv_maj )) 2>/dev/null; then _apfw_uptype="major update"
+					elif (( _alv_maj == _acv_maj && _alv_min > _acv_min )) 2>/dev/null; then _apfw_uptype="minor update"
+					elif (( _alv_maj == _acv_maj && _alv_min == _acv_min && _alv_pat > _acv_pat )) 2>/dev/null; then _apfw_uptype="patch update"
+					fi
+				fi
+
+				# Blacklist check (substring match against raw latest version string)
+				_apfw_bl=0
+				if [[ -n "${firmware_blacklist}" ]]; then
+					IFS=',' read -ra _apfw_bl_arr <<< "${firmware_blacklist}"
+					for _apfw_bl_v in "${_apfw_bl_arr[@]}"; do
+						_apfw_bl_v="${_apfw_bl_v# }" ; _apfw_bl_v="${_apfw_bl_v% }"
+						[[ -n "${_apfw_bl_v}" && "${_apfw_lv}" == *"${_apfw_bl_v}"* ]] && _apfw_bl=1 && break
+					done
+					unset _apfw_bl_arr
+				fi
+
+				if [[ "${_apfw_bl}" -eq 1 ]]; then
+					[[ -n "${verbose}" ]] && \
+						fg_output+="${status_ok} - Firmware AP ${_apfw_name}: ${_apfw_uptype} ${_apfw_lat_s} blacklisted\n"
+				elif [[ -z "${no_firmware_updates_warn}" ]]; then
+					fg_output+="${status_warn} - Firmware AP ${_apfw_name}: ${_apfw_uptype} available: ${_apfw_lat_s}\n"
+					fg_problem_output+="${status_warn} - Firmware AP ${_apfw_name}: ${_apfw_uptype} available (current: v${_apfw_cver}, latest: ${_apfw_lat_s})\n"
+				else
+					fg_output+="${status_ok} - Firmware AP ${_apfw_name}: ${_apfw_uptype} available: ${_apfw_lat_s}\n"
+				fi
+			elif [[ -n "${_apfw_er}" ]]; then
+				[[ -n "${verbose}" ]] && \
+					fg_output+="${status_ok} - Firmware AP ${_apfw_name}: update check unavailable (FortiGuard timeout)\n"
+			elif [[ -n "${verbose}" && -n "${_apfw_av}" ]]; then
+				fg_output+="${status_ok} - Firmware AP ${_apfw_name}: up-to-date\n"
+			fi
+		done < <(echo "${_ap_mgd_buf}" | "${JQ}" --unbuffered -r \
+			'.results[] | [(.name // .wtp_id), (.os_version // "")] | join("\t")' 2>/dev/null)
+
+		unset _apfw_latest_v _apfw_avail_v _apfw_err_v
+	fi
+
+	# ---------------------------------------------------------------------------
+	# FortiSwitch firmware (current version from managed-switch; no update API)
+	# ---------------------------------------------------------------------------
+	if [[ -n "${verbose}" ]]; then
+		_sw_fw_buf=$(cat "${_pf}/managed_sw.json" 2>/dev/null)
+		if [[ -n "${_sw_fw_buf}" && "${_sw_fw_buf}" =~ '"results"' ]]; then
+			while IFS=$'\t' read -r _swfw_name _swfw_serial _swfw_ver; do
+				_swfw_ver_s="unknown"
+				[[ -n "${_swfw_ver}" && "${_swfw_ver}" != "null" && "${_swfw_ver}" != "" ]] && \
+					_swfw_ver_s="${_swfw_ver}"
+				fg_output+="${status_ok} - Firmware SW ${_swfw_name}: current: ${_swfw_ver_s} | serial: ${_swfw_serial}\n"
+			done < <(echo "${_sw_fw_buf}" | "${JQ}" --unbuffered -r '
+				.results[] |
+				[(.name // .switch_id), (.serial // "unknown"),
+				 (.os_version // .firmware_version // .version // "")] | join("\t")' 2>/dev/null)
+		fi
+	fi
+
+	# ---------------------------------------------------------------------------
+	# FortiExtender firmware (current version from fortiextender; no update API)
+	# ---------------------------------------------------------------------------
+	if [[ -n "${verbose}" ]]; then
+		_fex_fw_buf=$(cat "${_pf}/fex.json" 2>/dev/null)
+		if [[ -n "${_fex_fw_buf}" && "${_fex_fw_buf}" =~ '"results"' ]]; then
+			while IFS=$'\t' read -r _fexfw_name _fexfw_serial _fexfw_ver; do
+				_fexfw_ver_s="unknown"
+				[[ -n "${_fexfw_ver}" && "${_fexfw_ver}" != "null" && "${_fexfw_ver}" != "" ]] && \
+					_fexfw_ver_s="${_fexfw_ver}"
+				fg_output+="${status_ok} - Firmware FEX ${_fexfw_name}: current: ${_fexfw_ver_s} | serial: ${_fexfw_serial}\n"
+			done < <(echo "${_fex_fw_buf}" | "${JQ}" --unbuffered -r '
+				.results[] |
+				[(.name // .id), (.serial // "unknown"),
+				 (.os_version // .firmware_version // .version // "")] | join("\t")' 2>/dev/null)
+		fi
 	fi
 
 	if [[ -n "${verbose}" ]]; then
