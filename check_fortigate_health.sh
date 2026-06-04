@@ -7,6 +7,16 @@
 #
 # Version history:
 # 2026-06-01 Felix Longardt <monitoring@longardt.com>
+# Release: 1.4.46
+#   Firmware: --no-firmware-minor-warn now also suppresses patch warnings so
+#     only major version updates emit WARN (hierarchical: minor suppresses
+#     both patch and minor, major suppresses only major)
+# Release: 1.4.45
+#   Firmware: fix release-type field name (was release_type, breaking GA filter);
+#     separate WARN lines for patch/minor/major updates; --no-firmware-major-warn
+#     and --no-firmware-minor-warn to suppress individual update levels;
+#     --firmware-mature-only restricts to maturity=M releases; verbose listing
+#     now uses integer major/minor/patch comparison and shows release-type/maturity
 # Release: 1.4.44
 #   FortiCloud: add --warn/crit-cloud-sandbox (default 80/90%) for daily sandbox
 #     file quota; --warn/crit-cloud-staging (default 80/90%) for staging disk
@@ -490,7 +500,7 @@
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="1.4.44"
+REVISION="1.4.46"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -691,7 +701,11 @@ Options:
  -eUp,      --enable-uptime
     Uptime check: alert when uptime is below threshold (reboot detection)
  -eFirmware,--enable-firmware
-    Firmware version: installed version and available GA updates
+    Firmware version: installed version; separate WARN for patch/minor/major GA updates
+    --no-firmware-updates-warn: suppress all update warnings (informational only)
+    --no-firmware-major-warn:   suppress WARN for major version (e.g. v7 -> v8)
+    --no-firmware-minor-warn:   suppress WARN for minor and patch updates; only major warns
+    --firmware-mature-only:     only warn on maturity=M (Mature) releases; skips Fresh/Beta
  -eSensor,  --enable-sensors
     Hardware sensors: temperature, voltage, fan speed (appliance-defined thresholds)
  -eFWStats, --enable-fwstats
@@ -768,8 +782,6 @@ Options:
     Use to detect unexpected reboots, e.g. --warn-uptime 60 --crit-uptime 5
  --crit-uptime <minutes>
     CRITICAL if uptime is below this value in minutes (default: 0 = disabled)
- --no-firmware-updates-warn
-    Treat available firmware updates as informational only (suppress WARNING state)
  --firmware-show-all
     In verbose mode, list all available firmware versions including older ones
     (default: only versions newer than the installed version are shown)
@@ -1068,12 +1080,11 @@ while [[ -n "${1}" ]]; do
 		shift
 		crit_uptime="${1}"
 		;;
-	--no-firmware-updates-warn)
-		no_firmware_updates_warn=1
-		;;
-	--firmware-show-all)
-		firmware_show_all=1
-		;;
+	--no-firmware-updates-warn)  no_firmware_updates_warn=1 ;;
+	--no-firmware-major-warn)    no_firmware_major_warn=1 ;;
+	--no-firmware-minor-warn)    no_firmware_minor_warn=1 ;;
+	--firmware-mature-only)      firmware_mature_only=1 ;;
+	--firmware-show-all)         firmware_show_all=1 ;;
 	# Thresholds
 	-w|--warning)
 		shift
@@ -4233,49 +4244,100 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 		_fw_build=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
 			'.results.current.build // ""' 2>/dev/null)
 		_fw_type=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
-			'.results.current.release_type // ""' 2>/dev/null)
+			'.results.current."release-type" // ""' 2>/dev/null)
+		_fw_maturity=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			'.results.current.maturity // ""' 2>/dev/null)
+		_fw_cur_major=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			'.results.current.major // 0' 2>/dev/null)
+		_fw_cur_minor=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			'.results.current.minor // 0' 2>/dev/null)
+		_fw_cur_patch=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			'.results.current.patch // 0' 2>/dev/null)
 
-		_fw_build_s=""
-		[[ -n "${_fw_build}" && "${_fw_build}" != "null" ]] && _fw_build_s=" build ${_fw_build}"
-		_fw_type_s=""
-		[[ -n "${_fw_type}" && "${_fw_type}" != "null" && "${_fw_type}" != "" ]] && _fw_type_s=" (${_fw_type})"
+		_fw_build_s="" ; [[ -n "${_fw_build}"    && "${_fw_build}"    != "null" ]] && _fw_build_s=" build ${_fw_build}"
+		_fw_type_s=""  ; [[ -n "${_fw_type}"     && "${_fw_type}"     != "null" && "${_fw_type}" != "" ]] && _fw_type_s=" (${_fw_type})"
+		_fw_mat_s=""   ; [[ -n "${_fw_maturity}" && "${_fw_maturity}" != "null" && "${_fw_maturity}" != "" ]] && _fw_mat_s="/${_fw_maturity}"
 
-		# Latest available GA release
-		_fw_avail=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r '
-			[(.results.available // [])[] | select(.release_type == "GA")] |
-			sort_by(.version) | last | .version // ""' 2>/dev/null)
+		# Maturity filter for available versions: "M" = Mature, "F" = Feature/Fresh
+		_fw_mat_filter='true'
+		[[ -n "${firmware_mature_only}" ]] && _fw_mat_filter='(.maturity == "M")'
+
+		# Latest GA patch update (same major.minor, higher patch)
+		_fw_new_patch=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			--argjson maj "${_fw_cur_major}" --argjson min "${_fw_cur_minor}" --argjson pat "${_fw_cur_patch}" \
+			--argjson mf "${_fw_mat_filter}" '
+			[(.results.available // [])[] |
+				select(."release-type" == "GA" and .major == $maj and .minor == $min and .patch > $pat) |
+				select('"${_fw_mat_filter}"')] |
+			sort_by(.patch) | last | .version // ""' 2>/dev/null)
+
+		# Latest GA minor update (same major, higher minor)
+		_fw_new_minor=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			--argjson maj "${_fw_cur_major}" --argjson min "${_fw_cur_minor}" \
+			'[(.results.available // [])[] |
+				select(."release-type" == "GA" and .major == $maj and .minor > $min) |
+				select('"${_fw_mat_filter}"')] |
+			sort_by([.minor,.patch]) | last | .version // ""' 2>/dev/null)
+
+		# Latest GA major update (higher major)
+		_fw_new_major=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
+			--argjson maj "${_fw_cur_major}" \
+			'[(.results.available // [])[] |
+				select(."release-type" == "GA" and .major > $maj) |
+				select('"${_fw_mat_filter}"')] |
+			sort_by([.major,.minor,.patch]) | last | .version // ""' 2>/dev/null)
 
 		_fw_state="${status_ok}"
-		_fw_update_s=""
+		fg_output+="${_fw_state} - Firmware ${fg_hostname}: current: ${_fw_installed}${_fw_build_s}${_fw_type_s}${_fw_mat_s}\n"
 
-		if [[ -n "${_fw_avail}" && "${_fw_avail}" != "null" && "${_fw_avail}" != "${_fw_installed}" ]]; then
-			_fw_update_s=" | Update available: ${_fw_avail}"
-			if [[ -z "${no_firmware_updates_warn}" ]]; then
+		# Patch update
+		if [[ -n "${_fw_new_patch}" && "${_fw_new_patch}" != "null" ]]; then
+			if [[ -z "${no_firmware_updates_warn}" && -z "${no_firmware_minor_warn}" ]]; then
 				_fw_state="${status_warn}"
-				fg_problem_output+="${status_warn} - Firmware ${fg_hostname}: update available (installed: ${_fw_installed}, latest GA: ${_fw_avail})\n"
+				fg_output+="${status_warn} - Firmware ${fg_hostname}: patch update available: ${_fw_new_patch}\n"
+				fg_problem_output+="${status_warn} - Firmware ${fg_hostname}: patch update available (installed: ${_fw_installed}, available: ${_fw_new_patch})\n"
+			else
+				fg_output+="${status_ok} - Firmware ${fg_hostname}: patch update available: ${_fw_new_patch}\n"
 			fi
 		fi
 
-		fg_output+="${_fw_state} - Firmware ${fg_hostname}: ${_fw_installed}${_fw_build_s}${_fw_type_s}${_fw_update_s}\n"
+		# Minor update
+		if [[ -n "${_fw_new_minor}" && "${_fw_new_minor}" != "null" ]]; then
+			if [[ -z "${no_firmware_updates_warn}" && -z "${no_firmware_minor_warn}" ]]; then
+				_fw_state="${status_warn}"
+				fg_output+="${status_warn} - Firmware ${fg_hostname}: minor update available: ${_fw_new_minor}\n"
+				fg_problem_output+="${status_warn} - Firmware ${fg_hostname}: minor update available (installed: ${_fw_installed}, available: ${_fw_new_minor})\n"
+			else
+				fg_output+="${status_ok} - Firmware ${fg_hostname}: minor update available: ${_fw_new_minor}\n"
+			fi
+		fi
+
+		# Major update
+		if [[ -n "${_fw_new_major}" && "${_fw_new_major}" != "null" ]]; then
+			if [[ -z "${no_firmware_updates_warn}" && -z "${no_firmware_major_warn}" ]]; then
+				_fw_state="${status_warn}"
+				fg_output+="${status_warn} - Firmware ${fg_hostname}: major update available: ${_fw_new_major}\n"
+				fg_problem_output+="${status_warn} - Firmware ${fg_hostname}: major update available (installed: ${_fw_installed}, available: ${_fw_new_major})\n"
+			else
+				fg_output+="${status_ok} - Firmware ${fg_hostname}: major update available: ${_fw_new_major}\n"
+			fi
+		fi
 
 		if [[ -n "${verbose}" ]]; then
 			_fw_show_all_arg=false
 			[[ -n "${firmware_show_all}" ]] && _fw_show_all_arg=true
 			_fw_avail_all=$(echo "${_fw_buffer}" | "${JQ}" --unbuffered -r \
-				--arg cur "${_fw_installed}" \
+				--argjson cmaj "${_fw_cur_major}" --argjson cmin "${_fw_cur_minor}" --argjson cpat "${_fw_cur_patch}" \
 				--argjson show_all "${_fw_show_all_arg}" '
-				def ver: ltrimstr("v") | split(".") | map(tonumber? // 0);
-				($cur | ver) as $cv |
 				[(.results.available // [])[] |
 					select(
 						$show_all or
-						((.version | ver) as $av |
-						 $av[0] > $cv[0] or
-						 ($av[0] == $cv[0] and $av[1] > $cv[1]) or
-						 ($av[0] == $cv[0] and $av[1] == $cv[1] and $av[2] > $cv[2]))
+						(.major > $cmaj or
+						 (.major == $cmaj and .minor > $cmin) or
+						 (.major == $cmaj and .minor == $cmin and .patch > $cpat))
 					) |
 					(.version // "") +
-					(if (.release_type // "") != "" then " (" + .release_type + ")" else "" end)
+					(if (."release-type" // "") != "" then " (" + ."release-type" + "/" + (.maturity // "") + ")" else "" end)
 				] | sort | .[]' 2>/dev/null)
 			if [[ -n "${_fw_avail_all}" ]]; then
 				while IFS= read -r _fv; do
