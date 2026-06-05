@@ -3,17 +3,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Shell Script](https://img.shields.io/badge/Shell-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Monitoring](https://img.shields.io/badge/Monitoring-Icinga%2FNagios-blue.svg)](https://icinga.com/)
-[![Version](https://img.shields.io/badge/version-1.4.47-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)](CHANGELOG.md)
 
-A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, compatible with Icinga and Nagios monitoring systems. This plugin monitors system health, resources, VPN, SD-WAN, security services, licenses, certificates, and more — directly via the FortiGate REST API v2. No FortiManager required.
+A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, compatible with Icinga and Nagios monitoring systems. This plugin monitors system health, resources, VPN, SD-WAN, security services, licenses, certificates, and more — directly via the FortiGate REST API v2 and/or SNMP. No FortiManager required.
 
 ## Features
 
 - **Direct API Access**: Connects to the firewall's local REST API v2 — no FortiManager or cloud dependency
-- **Comprehensive Coverage**: System, CPU/memory, HA, interfaces, IPsec/SSL-VPN, NTP, SD-WAN, FortiAP, FortiSwitch, DHCP, VDOM, FortiToken, UTM, licenses, certificates, alerts, firmware, sensors, and more
-- **Flexible Authentication**: API token (recommended), username/password session, or SNMP v2c/v3
+- **Comprehensive Coverage**: System, CPU/memory, HA, interfaces, IPsec/SSL-VPN, NTP, SD-WAN, FortiAP, FortiSwitch, DHCP, VDOM, FortiToken, UTM, IPS/AV stats, licenses, certificates, alerts, firmware, sensors, and more
+- **Flexible Authentication**: API token (recommended) or SNMP v2c/v3 (SNMP-only mode supported)
+- **SNMP Fallbacks**: HA mode/sync, license info, firmware version, uptime, interface counters — all available via SNMP when REST is unavailable
 - **Opt-in or Opt-out**: Use `-eX` flags to run only specific checks, or `--disable-X` to suppress individual modules from the full set
-- **Granular Thresholds**: Per-metric warning/critical thresholds for CPU, memory, disk, latency, packet loss, certificate expiry, license expiry, signature age, uptime, and more
+- **Granular Thresholds**: Per-metric warning/critical thresholds for CPU, memory, disk, latency, packet loss, certificate expiry, license expiry, signature age, uptime, IPS/AV detections, and more
 - **SD-WAN Auto-Detection**: Automatically finds the SD-WAN VDOM when it is not in the root VDOM
 - **Log Event Monitoring**: Configurable logwatch check that scans recent log entries across multiple log types in parallel
 - **Blacklisting & Selection**: Skip specific interfaces, VPN tunnels, certificates, DHCP pools, or license features
@@ -75,7 +76,7 @@ sudo emerge net-misc/curl app-misc/jq sys-apps/gawk net-analyzer/net-snmp
 ### Basic Syntax
 
 ```bash
-./check_fortigate_health.sh [-h] [-V] -H <host> { -T <api_token> | -U <user> -P <pass> } [options] [-w <warn>] [-c <crit>]
+./check_fortigate_health.sh [-h] [-V] -H <host> -T <api_token> [options] [-w <warn>] [-c <crit>]
 ```
 
 ### Authentication
@@ -83,7 +84,6 @@ sudo emerge net-misc/curl app-misc/jq sys-apps/gawk net-analyzer/net-snmp
 | Method | Parameters | Description |
 |--------|-----------|-------------|
 | API token | `-T <token>` | Recommended — create a REST API Admin in FortiGate GUI: System › Administrators › REST API Admin |
-| Username / Password | `-U <user> -P <pass>` | Session-based auth via cookie/CSRF — use `-T` where possible |
 | SNMP v2c | `-SC <community>` | Enables SNMP-based resource/uptime collection alongside or instead of REST API |
 | SNMP v3 | `--snmp-user <name>` | SNMPv3 mode — security level auto-detected from provided credentials |
 
@@ -92,9 +92,7 @@ sudo emerge net-misc/curl app-misc/jq sys-apps/gawk net-analyzer/net-snmp
 | Parameter | Description |
 |-----------|-------------|
 | `-H, --host <hostname\|IP>` | Hostname or IP address of the FortiGate |
-| `-T, --token <token>` | API token (option A) |
-| `-U, --username <user>` | Username (option B) |
-| `-P, --password <pass>` | Password (option B) |
+| `-T, --token <token>` | API token |
 
 ### Enable Flags (opt-in)
 
@@ -104,8 +102,9 @@ If any `-eX` flag is given, **only those modules** run. When no flags are given,
 |------|-----------|-------------|
 | `-eSys` | `--enable-system` | System info: model, serial, hostname, FortiOS version, HA role |
 | `-eRes` | `--enable-resources` | CPU%, memory%, session count and setup rate |
-| `-eHA` | `--enable-ha` | HA cluster mode, member count, roles |
-| `-eNI` | `--enable-interfaces` | Network interface link states |
+| `-eHA` | `--enable-ha` | HA cluster mode, member count, roles, sync state |
+| `-eNI` | `--enable-interfaces` | Network interface link states; use --ifup/--ifdown for explicit expectations |
+| `-eNIS` | `--enable-interface-single` | Single interface check; requires `--ifup <name>`; perfdata: link, rx/tx bytes, errors, drops |
 | `-eVPN` | `--enable-vpn` | IPsec VPN tunnel status per tunnel |
 | `-eSSL` | `--enable-sslvpn` | SSL-VPN active sessions and tunnel state |
 | `-eNTP` | `--enable-ntp` | NTP peer reachability and clock offset |
@@ -117,13 +116,13 @@ If any `-eX` flag is given, **only those modules** run. When no flags are given,
 | `-eIPAM` | `--enable-ipam` | FortiIPAM pool/rule counts and available subnets |
 | `-eVDOM` | `--enable-vdom` | Per-VDOM CPU, memory, sessions; VDOM license usage |
 | `-eFTK` | `--enable-ftk` | FortiToken usage: total/activated/available per type (mobile/hardware) |
-| `-eUTM` | `--enable-utm` | IPS/AV/AppCtrl signature age, license status, DoS rules |
+| `-eUTM` | `--enable-utm` | IPS/AV/AppCtrl signature age, license status, DoS rules; IPS+AV detection stats (SNMP) |
 | `-eSD` | `--enable-storage` | Disk/storage partition usage |
 | `-eLic` | `--enable-license` | FortiCare support and FortiGuard feature license expiry |
 | `-eCert` | `--enable-certs` | Local certificate expiry |
 | `-eAl` | `--enable-alerts` | System event alerts from disk log (emergency/alert/critical) |
 | `-eUp` | `--enable-uptime` | Uptime check — alert when uptime is below threshold (reboot detection) |
-| `-eFirmware` | `--enable-firmware` | Installed firmware version vs. available GA updates |
+| `-eFirmware` | `--enable-firmware` | Installed firmware version vs. available GA updates; includes FortiAP firmware |
 | `-eSensor` | `--enable-sensors` | Hardware sensors: temperature, voltage, fan speed |
 | `-eFWStats` | `--enable-fwstats` | Firewall policy byte/session/hit counters |
 | `-eLogwatch` | `--enable-logwatch` | Log event monitoring — **not included in `-A`**, must be enabled explicitly |
@@ -162,6 +161,12 @@ Suppress individual modules when running the full check set:
 | `--crit-db-age <days>` | 30 | CRITICAL threshold for FortiGuard DB last-update age in days |
 | `--warn-utm-update <days>` | 30 | WARNING threshold for UTM signature age in days |
 | `--crit-utm-update <days>` | 60 | CRITICAL threshold for UTM signature age in days |
+| `--warn-ips <n>` | -1 | WARNING when total IPS detections exceed N (SNMP; -1 = disabled) |
+| `--crit-ips <n>` | -1 | CRITICAL when total IPS detections exceed N (SNMP; -1 = disabled) |
+| `--warn-ips-high <n>` | -1 | WARNING when critical+high severity IPS detections exceed N (SNMP) |
+| `--crit-ips-high <n>` | -1 | CRITICAL when critical+high severity IPS detections exceed N (SNMP) |
+| `--warn-av <n>` | -1 | WARNING when AV detections exceed N (SNMP; -1 = disabled) |
+| `--crit-av <n>` | -1 | CRITICAL when AV detections exceed N (SNMP; -1 = disabled) |
 | `--warn-ntp-offset <ms>` | 300 | WARNING threshold for NTP clock offset in milliseconds |
 | `--crit-ntp-offset <ms>` | 500 | CRITICAL threshold for NTP clock offset in milliseconds |
 | `--warn-sdwan-loss <pct>` | 5 | WARNING threshold for SD-WAN packet loss in % |
@@ -190,14 +195,14 @@ Suppress individual modules when running the full check set:
 | `--crit-ftk-available <n>` | -1 | CRITICAL when available FortiTokens are <= N (-1 = disabled) |
 | `--warn-uptime <minutes>` | 0 | WARNING if uptime is below this value in minutes (0 = disabled) |
 | `--crit-uptime <minutes>` | 0 | CRITICAL if uptime is below this value in minutes (0 = disabled) |
-| `--warn-ni-errors <n>` | -1 | WARNING threshold for interface tx+rx error counter (-1 = disabled) |
-| `--crit-ni-errors <n>` | -1 | CRITICAL threshold for interface tx+rx error counter (-1 = disabled) |
+| `--warn-ni-errors <n>` | -1 | WARNING threshold for interface total error counter (-1 = disabled) |
+| `--crit-ni-errors <n>` | -1 | CRITICAL threshold for interface total error counter (-1 = disabled) |
 
 ### Filter Options
 
 | Option | Description |
 |--------|-------------|
-| `--ifup <list>` | Comma-separated interfaces that MUST be link-up — CRITICAL if any are down |
+| `--ifup <list>` | Comma-separated interfaces that MUST be link-up — CRITICAL if any are down; required for `-eNIS` |
 | `--ifdown <list>` | Comma-separated interfaces expected to be down — WARNING if unexpectedly up |
 | `--blacklist-interfaces <list>` | Interface names to skip entirely (e.g. `port1,mgmt`) |
 | `--blacklist-vpn <list>` | VPN tunnel names to skip |
@@ -250,6 +255,7 @@ Without `--logwatch-eventids` or `--logwatch-actions`, severity is derived from 
 | `--perfdata` | Explicitly request perfdata output (default when not suppressed) |
 | `-s, --silent` | Show only problem lines (suppress OK detail) |
 | `-v, --verbose` | Print section headers and full per-item detail |
+| `--append-fw-name` | Prefix every output line with the device hostname (default: hostname suppressed) |
 | `-d, --debug` | Enable bash trace output (`set -x`) |
 
 ## Examples
@@ -268,7 +274,7 @@ System info, resources, and recent alerts only:
 
 ### Opt-out: Full Check Without SSL-VPN
 ```bash
-./check_fortigate_health.sh -H 10.0.0.1 -U monitor -P secret --disable-sslvpn -v
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 --disable-sslvpn -v
 ```
 
 ### Interface Enforcement
@@ -276,6 +282,13 @@ Require specific interfaces to be up; expect maintenance ports to be down:
 ```bash
 ./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -eNI \
   --ifup port1,port2,wan1 --ifdown port5,port6
+```
+
+### Single Interface Monitor
+Monitor a specific interface with full perfdata (link state, rx/tx bytes, errors, drops):
+```bash
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -eNIS --ifup wan1
+# [OK] - Interface wan1: up | 1000 Mbps
 ```
 
 ### SD-WAN with Latency and Loss Thresholds
@@ -290,6 +303,13 @@ Warn 60 days before certificate expiry, critical at 14 days:
 ```bash
 ./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -eCert -eLic \
   --warn-cert 60 --crit-cert 14 --warn-lic 60 --crit-lic 14
+```
+
+### IPS/AV Detection Statistics (SNMP)
+Alert when IPS detections or AV events exceed thresholds since last boot:
+```bash
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -SC public -eUTM \
+  --warn-ips 1000 --crit-ips 5000 --warn-av 100 --crit-av 500
 ```
 
 ### Log Event Monitoring for IPS and Anomaly
@@ -312,23 +332,44 @@ Alert if the firewall has been up for less than 30 minutes:
   --disable-sensors --disable-fwstats --no-perfdata
 ```
 
+### SNMP-Only Mode (No REST API)
+```bash
+./check_fortigate_health.sh -H 10.0.0.1 -SC public -eSys -eRes -eNI -eHA
+```
+
 ## Sample Output
 
+Default (no `--append-fw-name`):
 ```
-[OK] - System fw-prod (FortiGate-101F) | FortiOS: v7.6.1 | S/N: FGT101FXXXXXXXXX | Uptime: 42d 3h 17m
-[OK] - Resources fw-prod: CPU: 12% | Mem: 54% | Sessions: 18432 (setup: 142/s)
-[OK] - HA fw-prod: a-p | 2 member(s) | active: fw-prod
-[OK] - Interfaces fw-prod: 8 up, 0 down, 2 expected-down
-[OK] - VPN fw-prod: 4 tunnels up, 0 down
-[OK] - NTP fw-prod: 2/2 peers reachable | max offset: 1ms
-[WARNING] - SD-WAN fw-prod/probe-isp1/wan1: loss 8% >= 5%
-[OK] - SD-WAN fw-prod/probe-isp2/wan2: up | latency: 12ms | loss: 0%
-[OK] - License fw-prod: FortiCare expires in 312d | FGVM: expires in 312d
-[OK] - Certificates fw-prod: 3 certs OK (earliest expiry: 187d)
-[WARNING] - UTM fw-prod: IPS signatures 35d old (warn: >= 30d)
-[OK] - Storage fw-prod: / 18% | /var 42%
-[OK] - Alerts fw-prod: no critical events in last 50 log entries
-| cpu=12%;80;90;0;100 mem=54%;75;80;0;100 sessions=18432 ...
+[OK] - FortiGate-101F | FortiOS: v7.6.1 | Role: standalone
+[OK] - CPU: 12% (warn: 80%, crit: 90%)
+[OK] - Memory: 54% (warn: 75%, crit: 80%) | Sessions: 18432
+[OK] - HA mode: a-p | 2 member(s)
+[OK] - HA Sync: synchronized
+[OK] - Interfaces: 8 total, 8 up, 0 down
+[OK] - Interface wan1: up | 1000 Mbps
+[OK] - VPN: 4/4 tunnel(s) UP
+[OK] - NTP: 2/2 reachable | offset: 1ms (warn: 300ms, crit: 500ms)
+[WARNING] - SD-WAN probe-isp1/wan1: loss 8% >= warn (5%)
+[OK] - License FortiCare: valid (2027-01-15, 312d left)
+[OK] - Certs: 3 certificate(s) OK
+[WARNING] - UTM: IPS db not updated for 35d (last: 2026-05-01)
+[OK] - Firmware: current: v7.6.6 build 3652 (GA)/M
+[OK] - Alerts: no critical/error events in last 50 entries
+| cpu=12%;80;90;0;100 mem=54%;75;80;0;100 sessions=18432 ni_wan1_link=1 ni_wan1_rx_bytes=1556780398173 ni_wan1_tx_bytes=423190234 ni_wan1_rx_errors=0 ni_wan1_tx_errors=0 ni_wan1_rx_drops=0 ni_wan1_tx_drops=0 ...
+```
+
+With `--append-fw-name`:
+```
+[OK] - fw-prod: FortiGate-101F | FortiOS: v7.6.1 | Role: standalone
+[OK] - CPU fw-prod: 12% (warn: 80%, crit: 90%)
+[OK] - Memory fw-prod: 54% (warn: 75%, crit: 80%) | Sessions: 18432
+[OK] - HA Sync fw-prod: synchronized
+[OK] - Interfaces fw-prod: 8 total, 8 up, 0 down
+[OK] - Interface fw-prod/wan1: up | 1000 Mbps
+[WARNING] - SD-WAN fw-prod/probe-isp1/wan1: loss 8% >= warn (5%)
+[OK] - NTP fw-prod/ntp.example.com: reachable | stratum: 2 | offset: 1ms
+[OK] - License fw-prod/FortiCare: valid (2027-01-15, 312d left)
 ```
 
 ## Integration with Monitoring Systems
@@ -343,8 +384,6 @@ object CheckCommand "check_fortigate" {
     arguments = {
         "-H"  = "$fortigate_host$"
         "-T"  = "$fortigate_token$"
-        "-U"  = "$fortigate_username$"
-        "-P"  = "$fortigate_password$"
         "-w"  = "$fortigate_warning$"
         "-c"  = "$fortigate_critical$"
         "-A"  = {
@@ -444,6 +483,12 @@ define service {
 
 **SD-WAN shows "disabled" even though it is configured:**
 - SD-WAN is likely configured in a non-root VDOM. Either pass `--sdwan-vdom <name>` explicitly, or use version ≥ 1.4.29 which auto-detects the correct VDOM.
+
+**Uptime shows "not available" with REST API on FortiOS 7.4+:**
+- FortiOS 7.4+ removed the uptime field from the REST API. Use `--snmp-community` or `--snmp-user` to provide SNMP credentials — uptime will be read via SNMP automatically.
+
+**`-eNIS` shows UNKNOWN — no interface specified:**
+- `-eNIS` requires `--ifup <interface>` to specify which interface to check.
 
 **Logwatch returns no results for `event` type on memory device:**
 - The FortiOS memory log API does not expose the `event` or `traffic` types. Use `--logwatch-device disk` or restrict `--logwatch-type` to UTM types (ips, anomaly, virus, webfilter, etc.).
