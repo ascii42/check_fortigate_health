@@ -22,12 +22,23 @@
 # 1.4.56-60  2026-06-05  -eNIS single-interface check; interface perfdata (link/bytes/errors/drops)
 # 2.0.0  2026-06-05  Hostname-free output by default: device name suppressed in all lines unless
 #                    --append-fw-name is set; NI renamed to Interface throughout; -eNIS perfdata
+# 2.1.0  2026-06-08  -eShaper: traffic shaper stats (dropped pkts/bytes, bandwidth usage, perfdata);
+#                    auto-queries ALL VDOMs by default; --shaper-vdom to restrict to specific VDOM(s);
+#                    --warn/crit-shaper-drops alert; --warn/crit-ni-drops for interface drop alerting
+# 2.2.0  2026-06-08  -eShaper now uses CMDB endpoint (firewall.shaper/traffic-shaper) as primary
+#                    shaper source so configured shapers are always listed even without active
+#                    traffic; monitor endpoint overlaid for runtime stats when available
+# 2.3.0  2026-06-08  Fix shaper monitor extraction: data under .results.data[] (FortiOS 7.x);
+#                    fields: drops/dropped_bytes/current_bandwidth (bytes/sec → kbps auto-convert);
+#                    _shp_mon_get tries /select, scope=vdom, and base endpoint variants in order
+# 2.4.0  2026-06-08  --no-prefetch: serial API fetch mode for hardened systems; --tmp-dir <path>:
+#                    use alternative temp directory when /tmp is restricted
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.0.0"
+REVISION="2.4.0"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -282,6 +293,11 @@ Options:
     Hardware sensors: temperature, voltage, fan speed (appliance-defined thresholds)
  -eFWStats, --enable-fwstats                                             (REST only)
     Firewall policy statistics: aggregate byte/session/hit counters; --check-policy-cleanup
+ -eShaper,  --enable-shaper                                              (REST only)
+    Traffic shaper statistics: per-shaper total packets/bytes, bandwidth usage, active sessions,
+    dropped packets/bytes; alert thresholds: --warn-shaper-drops/--crit-shaper-drops (default: -1)
+    --shaper-vdom <vdom[,vdom,...]>  query specific VDOM(s) only; comma-separated;
+                                     default: auto-queries ALL VDOMs on the device
  -eSecRating,--enable-secrating                                          (REST only)
     Security Fabric security rating: overall score, grade, per-category pass/warn/fail counts,
     and failed check names; thresholds: --warn-secrating-score/--crit-secrating-score
@@ -314,7 +330,7 @@ Options:
  --disable-utm           --disable-storage       --disable-forticloud
  --disable-license       --disable-certs         --disable-alerts
  --disable-uptime        --disable-firmware      --disable-sensors
- --disable-fwstats       --disable-logwatch
+ --disable-fwstats       --disable-shaper        --disable-logwatch
 
  -w,  --warning  <integer>
     WARNING threshold for disk usage in % (default: 80)
@@ -349,6 +365,14 @@ Options:
     WARNING threshold for interface tx+rx error counter (default: disabled)
  --crit-ni-errors <integer>
     CRITICAL threshold for interface tx+rx error counter (default: disabled)
+ --warn-ni-drops <integer>
+    WARNING threshold for interface tx+rx drop counter (default: disabled)
+ --crit-ni-drops <integer>
+    CRITICAL threshold for interface tx+rx drop counter (default: disabled)
+ --warn-shaper-drops <integer>
+    WARNING threshold for dropped packets per shaper (default: disabled)
+ --crit-shaper-drops <integer>
+    CRITICAL threshold for dropped packets per shaper (default: disabled)
  --warn-uptime <minutes>
     WARNING if uptime is below this value in minutes (default: 0 = disabled)
     Use to detect unexpected reboots, e.g. --warn-uptime 60 --crit-uptime 5
@@ -387,6 +411,12 @@ Options:
     Suppress the perfdata section entirely (no | output)
  --perfdata
     Show current performance data in output
+ --no-prefetch
+    Disable parallel background API fetching; all calls run serially.
+    Use on hardened systems where background subshells or /tmp writes are restricted.
+ --tmp-dir <path>
+    Use <path> instead of /tmp for temporary files (default: /tmp).
+    Required when /tmp is noexec or not writable; directory must exist.
  -s,  --silent
     Show only problem lines (suppress OK detail)
  -v,  --verbose
@@ -517,6 +547,9 @@ while [[ -n "${1}" ]]; do
 	-eFWStats|--enable-fwstats)
 		enable_fwstats=1
 		;;
+	-eShaper|--enable-shaper)
+		enable_shaper=1
+		;;
 	-eNTP|--enable-ntp)
 		enable_ntp=1
 		;;
@@ -601,6 +634,7 @@ while [[ -n "${1}" ]]; do
 	--disable-firmware)     disable_firmware=1 ;;
 	--disable-sensors)      disable_sensors=1 ;;
 	--disable-fwstats)      disable_fwstats=1 ;;
+	--disable-shaper)       disable_shaper=1 ;;
 	--disable-ntp)          disable_ntp=1 ;;
 	--disable-sdwan)        disable_sdwan=1 ;;
 	--disable-ap)           disable_ap=1 ;;
@@ -729,6 +763,26 @@ while [[ -n "${1}" ]]; do
 	--crit-ni-errors)
 		shift
 		crit_ni_errors="${1}"
+		;;
+	--warn-ni-drops)
+		shift
+		warn_ni_drops="${1}"
+		;;
+	--crit-ni-drops)
+		shift
+		crit_ni_drops="${1}"
+		;;
+	--warn-shaper-drops)
+		shift
+		warn_shaper_drops="${1}"
+		;;
+	--crit-shaper-drops)
+		shift
+		crit_shaper_drops="${1}"
+		;;
+	--shaper-vdom)
+		shift
+		shaper_vdom="${1}"
 		;;
 	--warn-disk)
 		shift
@@ -944,6 +998,13 @@ while [[ -n "${1}" ]]; do
 	--perfdata)
 		show_perfdata=1
 		;;
+	--no-prefetch)
+		no_prefetch=1
+		;;
+	--tmp-dir)
+		shift
+		tmp_dir="${1}"
+		;;
 	-s|--silent)
 		silent=1
 		;;
@@ -985,6 +1046,7 @@ done
 -z "${enable_firmware}" &&
 -z "${enable_sensors}"  &&
 -z "${enable_fwstats}"  &&
+-z "${enable_shaper}"   &&
 -z "${enable_ntp}"      &&
 -z "${enable_uptime}"   &&
 -z "${enable_sdwan}"    &&
@@ -1017,6 +1079,10 @@ done
 [[ -z "${crit_uptime}" ]]    && crit_uptime=0
 [[ -z "${warn_ni_errors}" ]] && warn_ni_errors=-1
 [[ -z "${crit_ni_errors}" ]] && crit_ni_errors=-1
+[[ -z "${warn_ni_drops}"  ]] && warn_ni_drops=-1
+[[ -z "${crit_ni_drops}"  ]] && crit_ni_drops=-1
+[[ -z "${warn_shaper_drops}" ]] && warn_shaper_drops=-1
+[[ -z "${crit_shaper_drops}" ]] && crit_shaper_drops=-1
 [[ -z "${ni_ignore_down}" ]]      && ni_ignore_down=""
 [[ -z "${snmp_32bit_counters}" ]] && snmp_32bit_counters=""
 [[ -z "${warn_disk}" ]]     && warn_disk=80
@@ -1294,10 +1360,43 @@ fi
 # ---------------------------------------------------------------------------
 # Parallel API prefetch - fire all needed endpoints in background, wait once.
 # Avoids serial TLS handshakes; cuts runtime from ~N×RTT to ~1×RTT.
+# Disabled with --no-prefetch (serial mode); --tmp-dir overrides /tmp.
 # ---------------------------------------------------------------------------
-_pf=$(mktemp -d /tmp/.fg_check_XXXXXX)
+if [[ -n "${tmp_dir}" ]]; then
+	[[ ! -d "${tmp_dir}" ]] && exit_unknown "--tmp-dir '${tmp_dir}' does not exist or is not a directory"
+	_pf=$(mktemp -d "${tmp_dir}/.fg_check_XXXXXX") \
+		|| exit_unknown "Failed to create temp dir under '${tmp_dir}'"
+else
+	_pf=$(mktemp -d /tmp/.fg_check_XXXXXX) \
+		|| exit_unknown "Failed to create temp dir under /tmp (try --tmp-dir)"
+fi
 
-_pf_get() { fg_api_get "$1" > "${_pf}/$2" 2>/dev/null & }
+# In serial mode (_pf_get runs synchronously); parallel mode fires background jobs.
+_pf_get() {
+	if [[ -n "${no_prefetch}" ]]; then
+		fg_api_get "$1" > "${_pf}/$2" 2>/dev/null
+	else
+		fg_api_get "$1" > "${_pf}/$2" 2>/dev/null &
+	fi
+}
+
+# Fetch shaper runtime stats; tries multiple endpoint/scope variants in order.
+# Response data is under .results.data[] (FortiOS 7.x); falls back to .results[] for older firmware.
+# $1 = output file path, $2 = base URL (no /select suffix), $3 = VDOM name (optional)
+_shp_mon_get() {
+	local _out="${1}" _base="${2}" _vdom="${3:-}"
+	local _chk='(.results.data // .results // [] | length) > 0'
+	fg_api_get "${_base}/select${_vdom:+?vdom=${_vdom}}" > "${_out}" 2>/dev/null
+	"${JQ}" -e "${_chk}" "${_out}" >/dev/null 2>&1 && return
+	[[ -n "${_vdom}" ]] && {
+		fg_api_get "${_base}/select?scope=vdom&vdom=${_vdom}" > "${_out}" 2>/dev/null
+		"${JQ}" -e "${_chk}" "${_out}" >/dev/null 2>&1 && return
+	}
+	fg_api_get "${_base}${_vdom:+?vdom=${_vdom}}" > "${_out}" 2>/dev/null
+	"${JQ}" -e "${_chk}" "${_out}" >/dev/null 2>&1 && return
+	[[ -n "${_vdom}" ]] && \
+		fg_api_get "${_base}?scope=vdom&vdom=${_vdom}" > "${_out}" 2>/dev/null
+}
 
 # Always needed: HA CMDB (fg_ha_mode for System+HA checks) and global thresholds
 _pf_get "${FG_API}/cmdb/system/ha"       ha_cmdb.json
@@ -1352,6 +1451,25 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 [[ ( -n "${enable_fwstats}" || -n "${enable_all}" ) && -z "${disable_fwstats}" ]] && {
 	_pf_get "${FG_API}/monitor/firewall/policy/select"                                  fwpolicy4.json
 	_pf_get "${FG_API}/monitor/firewall/policy6/select"                                 fwpolicy6.json
+}
+[[ ( -n "${enable_shaper}" || -n "${enable_all}" ) && -z "${disable_shaper}" ]] && {
+	if [[ -n "${shaper_vdom}" ]]; then
+		IFS=',' read -ra _shp_pf_vdoms <<< "${shaper_vdom}"
+		for _shp_pf_v in "${_shp_pf_vdoms[@]}"; do
+			_shp_pf_v="${_shp_pf_v// /}"
+			_pf_get "${FG_API}/cmdb/firewall.shaper/traffic-shaper?vdom=${_shp_pf_v}" "shaper_cmdb_${_shp_pf_v}.json"
+			if [[ -n "${no_prefetch}" ]]; then
+				_shp_mon_get "${_pf}/shaper_mon_${_shp_pf_v}.json" \
+					"${FG_API}/monitor/firewall/shaper" "${_shp_pf_v}"
+			else
+				_shp_mon_get "${_pf}/shaper_mon_${_shp_pf_v}.json" \
+					"${FG_API}/monitor/firewall/shaper" "${_shp_pf_v}" &
+			fi
+		done
+	else
+		# Auto mode: prefetch VDOM list; per-VDOM CMDB+monitor queries done at check time
+		_pf_get "${FG_API}/cmdb/system/vdom?start=0&count=100"                          vdom_list.json
+	fi
 }
 [[ ( -n "${enable_ntp}"   || -n "${enable_all}" ) && -z "${disable_ntp}"   ]] && \
 	_pf_get "${FG_API}/monitor/system/ntp/status"                                       ntp_status.json
@@ -1412,7 +1530,7 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 	unset _lw_pf_types _lw_pf_t _lw_pf_url
 }
 
-wait  # All prefetch background jobs done
+[[ -z "${no_prefetch}" ]] && wait  # collect parallel prefetch jobs
 
 # Derive fg_ha_mode from prefetched result (needed by System Info and HA checks)
 _ha_cmdb_buf=$(cat "${_pf}/ha_cmdb.json" 2>/dev/null)
@@ -2063,11 +2181,24 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 				fg_output+="${_ni_err_state} - Interface ${_fwn}${_nin}: ${_ni_total_err} errors (tx:${_ni_txerr[count]} rx:${_ni_rxerr[count]})\n"
 			fi
 
+			# Drop counter check
+			_ni_txd="${_ni_txdrops[count]:-0}"; [[ ! "${_ni_txd}" =~ ^[0-9]+$ ]] && _ni_txd=0
+			_ni_rxd="${_ni_rxdrops[count]:-0}"; [[ ! "${_ni_rxd}" =~ ^[0-9]+$ ]] && _ni_rxd=0
+			_ni_total_drop=$(( _ni_txd + _ni_rxd ))
+			if [[ "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
+			   [[ "${crit_ni_drops}" -ge 0 ]] 2>/dev/null && \
+			   (( _ni_total_drop >= crit_ni_drops )) 2>/dev/null; then
+				fg_output+="${status_crit} - Interface ${_fwn}${_nin}: ${_ni_total_drop} drops (tx:${_ni_txd} rx:${_ni_rxd})\n"
+				fg_problem_output+="${status_crit} - Interface ${_fwn}${_nin}: ${_ni_total_drop} drops (tx:${_ni_txd} rx:${_ni_rxd})\n"
+			elif [[ "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
+			     (( _ni_total_drop >= warn_ni_drops )) 2>/dev/null; then
+				fg_output+="${status_warn} - Interface ${_fwn}${_nin}: ${_ni_total_drop} drops (tx:${_ni_txd} rx:${_ni_rxd})\n"
+				fg_problem_output+="${status_warn} - Interface ${_fwn}${_nin}: ${_ni_total_drop} drops (tx:${_ni_txd} rx:${_ni_rxd})\n"
+			fi
+
 			# Perfdata per interface (link, bytes, errors, drops)
 			_ni_lbl="${_nin//-/_}"
 			_ni_link_val=0; [[ "${_ni_links[count]}" == "up" ]] && _ni_link_val=1
-			_ni_txd="${_ni_txdrops[count]:-0}"; [[ ! "${_ni_txd}" =~ ^[0-9]+$ ]] && _ni_txd=0
-			_ni_rxd="${_ni_rxdrops[count]:-0}"; [[ ! "${_ni_rxd}" =~ ^[0-9]+$ ]] && _ni_rxd=0
 			fg_perf+=" ni_${_ni_lbl}_link=${_ni_link_val}"
 			[[ "${_ni_rxbytes[count]}" =~ ^[0-9]+$ ]] && fg_perf+=" ni_${_ni_lbl}_rx_bytes=${_ni_rxbytes[count]}"
 			[[ "${_ni_txbytes[count]}" =~ ^[0-9]+$ ]] && fg_perf+=" ni_${_ni_lbl}_tx_bytes=${_ni_txbytes[count]}"
@@ -2077,6 +2208,8 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 			fg_perf+=" ni_${_ni_lbl}_tx_drops=${_ni_txd}"
 			[[ "${_ni_total_err}" -gt 0 || "${warn_ni_errors}" -ge 0 ]] 2>/dev/null && \
 				fg_perf+=" ni_${_ni_lbl}_errors=${_ni_total_err};${warn_ni_errors};${crit_ni_errors}"
+			[[ "${_ni_total_drop}" -gt 0 || "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
+				fg_perf+=" ni_${_ni_lbl}_drops=${_ni_total_drop};${warn_ni_drops};${crit_ni_drops}"
 
 			if [[ -n "${_ni_expect_up[${_nin}]}" ]]; then
 				# Explicitly required UP
@@ -2203,12 +2336,15 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 			_ni_idisc="${_ni_in_disc[_nii]:-0}"  ; [[ ! "${_ni_idisc}" =~ ^[0-9]+$ ]] && _ni_idisc=0
 			_ni_odisc="${_ni_out_disc[_nii]:-0}" ; [[ ! "${_ni_odisc}" =~ ^[0-9]+$ ]] && _ni_odisc=0
 			_ni_terr=$(( _ni_ierr + _ni_oerr ))
+			_ni_tdisc=$(( _ni_idisc + _ni_odisc ))
 			fg_perf+=" ni_${_ni_lbl}_link=${_ni_link_val}"
 			fg_perf+=" ni_${_ni_lbl}_rx_bytes=${_ni_rxb} ni_${_ni_lbl}_tx_bytes=${_ni_txb}"
 			fg_perf+=" ni_${_ni_lbl}_rx_errors=${_ni_ierr} ni_${_ni_lbl}_tx_errors=${_ni_oerr}"
 			fg_perf+=" ni_${_ni_lbl}_rx_drops=${_ni_idisc} ni_${_ni_lbl}_tx_drops=${_ni_odisc}"
 			[[ "${_ni_terr}" -gt 0 || "${warn_ni_errors}" -ge 0 ]] 2>/dev/null && \
 				fg_perf+=" ni_${_ni_lbl}_errors=${_ni_terr};${warn_ni_errors};${crit_ni_errors}"
+			[[ "${_ni_tdisc}" -gt 0 || "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
+				fg_perf+=" ni_${_ni_lbl}_drops=${_ni_tdisc};${warn_ni_drops};${crit_ni_drops}"
 			# Error threshold alerting
 			if [[ "${warn_ni_errors}" -ge 0 ]] 2>/dev/null && \
 			   [[ "${crit_ni_errors}" -ge 0 ]] 2>/dev/null && \
@@ -2219,6 +2355,17 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 			     (( _ni_terr >= warn_ni_errors )) 2>/dev/null; then
 				fg_output+="${status_warn} - Interface ${_fwn}${_iname}: ${_ni_terr} errors (in:${_ni_ierr} out:${_ni_oerr}) (SNMP)\n"
 				fg_problem_output+="${status_warn} - Interface ${_fwn}${_iname}: ${_ni_terr} errors (in:${_ni_ierr} out:${_ni_oerr}) (SNMP)\n"
+			fi
+			# Drop threshold alerting
+			if [[ "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
+			   [[ "${crit_ni_drops}" -ge 0 ]] 2>/dev/null && \
+			   (( _ni_tdisc >= crit_ni_drops )) 2>/dev/null; then
+				fg_output+="${status_crit} - Interface ${_fwn}${_iname}: ${_ni_tdisc} drops (in:${_ni_idisc} out:${_ni_odisc}) (SNMP)\n"
+				fg_problem_output+="${status_crit} - Interface ${_fwn}${_iname}: ${_ni_tdisc} drops (in:${_ni_idisc} out:${_ni_odisc}) (SNMP)\n"
+			elif [[ "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
+			     (( _ni_tdisc >= warn_ni_drops )) 2>/dev/null; then
+				fg_output+="${status_warn} - Interface ${_fwn}${_iname}: ${_ni_tdisc} drops (in:${_ni_idisc} out:${_ni_odisc}) (SNMP)\n"
+				fg_problem_output+="${status_warn} - Interface ${_fwn}${_iname}: ${_ni_tdisc} drops (in:${_ni_idisc} out:${_ni_odisc}) (SNMP)\n"
 			fi
 			if [[ -n "${_ni_expect_up[${_iname}]}" ]]; then
 				(( _ni_checked++ ))
@@ -4739,6 +4886,166 @@ if [[ ( -n "${enable_fwstats}" || -n "${enable_all}" ) && -z "${disable_fwstats}
 	else
 		fg_output+="${status_ok} - FW Stats${_fws}endpoint not available\n"
 	fi
+
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="---------------------------------------\n\n"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Traffic Shaper Check
+# ---------------------------------------------------------------------------
+if [[ ( -n "${enable_shaper}" || -n "${enable_all}" ) && -z "${disable_shaper}" ]]; then
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="Traffic Shapers:\n---------------------------------------\n"
+	fi
+
+	# Build (cmdb_file, mon_file, vdom_prefix) triples to process
+	declare -a _shp_files_cmdb _shp_files_mon _shp_vpfx
+	if [[ -n "${shaper_vdom}" ]]; then
+		# Explicit VDOM list — use pre-fetched per-VDOM files
+		IFS=',' read -ra _shp_vdom_list <<< "${shaper_vdom}"
+		for _sv in "${_shp_vdom_list[@]}"; do
+			_sv="${_sv// /}"
+			_shp_files_cmdb+=("${_pf}/shaper_cmdb_${_sv}.json")
+			_shp_files_mon+=("${_pf}/shaper_mon_${_sv}.json")
+			_shp_vpfx+=("${_sv}/")
+		done
+	else
+		# Auto mode: query every VDOM from the pre-fetched VDOM list
+		mapfile -t _shp_auto_vdoms < <("${JQ}" -r '.results[].name // empty' \
+			"${_pf}/vdom_list.json" 2>/dev/null)
+		if [[ "${#_shp_auto_vdoms[@]}" -gt 0 ]]; then
+			for _sv in "${_shp_auto_vdoms[@]}"; do
+				[[ -z "${_sv}" ]] && continue
+				fg_api_get "${FG_API}/cmdb/firewall.shaper/traffic-shaper?vdom=${_sv}" \
+					> "${_pf}/shaper_cmdb_${_sv}.json" 2>/dev/null
+				_shp_mon_get "${_pf}/shaper_mon_${_sv}.json" \
+					"${FG_API}/monitor/firewall/shaper" "${_sv}"
+				_shp_files_cmdb+=("${_pf}/shaper_cmdb_${_sv}.json")
+				_shp_files_mon+=("${_pf}/shaper_mon_${_sv}.json")
+				_shp_vpfx+=("${_sv}/")
+			done
+		else
+			# Non-VDOM device: query root without scope
+			fg_api_get "${FG_API}/cmdb/firewall.shaper/traffic-shaper" \
+				> "${_pf}/shaper_cmdb_root.json" 2>/dev/null
+			_shp_mon_get "${_pf}/shaper_mon_root.json" \
+				"${FG_API}/monitor/firewall/shaper"
+			_shp_files_cmdb+=("${_pf}/shaper_cmdb_root.json")
+			_shp_files_mon+=("${_pf}/shaper_mon_root.json")
+			_shp_vpfx+=("")
+		fi
+	fi
+
+	_shp_count=0
+	_shp_total_drop_pkts=0
+	_shp_any_warn=0
+	_shp_any_crit=0
+	_shp_any_data=0
+
+	for _shp_fi in "${!_shp_files_cmdb[@]}"; do
+		_shp_buf_cmdb=$(cat "${_shp_files_cmdb[_shp_fi]}" 2>/dev/null)
+		[[ -z "${_shp_buf_cmdb}" || ! "${_shp_buf_cmdb}" =~ '"results"' ]] && continue
+		_shp_any_data=1
+		_shp_vp="${_shp_vpfx[_shp_fi]}"
+
+		# Load optional runtime stats from monitor endpoint into associative arrays keyed by shaper name.
+		# FortiOS 7.x: data under .results.data[]; fields in bytes/sec for bandwidth values.
+		declare -A _shp_mdrop_pkts=() _shp_mdrop_bytes=() _shp_mbw_used=()
+		_shp_buf_mon=$(cat "${_shp_files_mon[_shp_fi]}" 2>/dev/null)
+		if [[ -n "${_shp_buf_mon}" && "${_shp_buf_mon}" =~ '"results"' ]]; then
+			while IFS=$'\t' read -r _mn _mdrops _mdb _mcbw; do
+				[[ -z "${_mn}" ]] && continue
+				_shp_mdrop_pkts["${_mn}"]="${_mdrops:-0}"
+				_shp_mdrop_bytes["${_mn}"]="${_mdb:-0}"
+				# current_bandwidth is bytes/sec → convert to kbps
+				_shp_mbw_used["${_mn}"]=$(( ${_mcbw:-0} * 8 / 1000 ))
+			done < <(echo "${_shp_buf_mon}" | "${JQ}" --unbuffered -r '
+				(.results.data // .results)[]? | [
+					(.name // ""),
+					((.drops // .dropped_pkts // 0) | tostring),
+					((.dropped_bytes // 0) | tostring),
+					((.current_bandwidth // .bandwidth_used // 0) | tostring)
+				] | join("\t")' 2>/dev/null)
+		fi
+
+		# Process configured shapers from CMDB; CMDB uses hyphenated field names
+		while IFS=$'\t' read -r _sname _sgbw _smbw _sbwunit _sprio; do
+			[[ -z "${_sname}" ]] && continue
+			(( _shp_count++ ))
+
+			# Runtime stats from monitor overlay (0 when endpoint returns no data)
+			_sdrop_pkts="${_shp_mdrop_pkts[${_sname}]:-0}"
+			_sdrop_bytes="${_shp_mdrop_bytes[${_sname}]:-0}"
+			_sbw_used="${_shp_mbw_used[${_sname}]:-0}"   # already in kbps
+
+			[[ ! "${_sdrop_pkts}"  =~ ^[0-9]+$ ]] && _sdrop_pkts=0
+			[[ ! "${_sdrop_bytes}" =~ ^[0-9]+$ ]] && _sdrop_bytes=0
+			[[ ! "${_sbw_used}"    =~ ^[0-9]+$ ]] && _sbw_used=0
+			[[ ! "${_smbw}"        =~ ^[0-9]+$ ]] && _smbw=0
+			_shp_total_drop_pkts=$(( _shp_total_drop_pkts + _sdrop_pkts ))
+
+			_shp_state="${status_ok}"
+			if [[ "${warn_shaper_drops}" -ge 0 ]] 2>/dev/null && \
+			   [[ "${crit_shaper_drops}" -ge 0 ]] 2>/dev/null && \
+			   (( _sdrop_pkts >= crit_shaper_drops )) 2>/dev/null; then
+				_shp_state="${status_crit}"
+				(( _shp_any_crit++ ))
+				fg_problem_output+="${status_crit} - Shaper ${_fwn}${_shp_vp}${_sname}: ${_sdrop_pkts} pkts dropped\n"
+			elif [[ "${warn_shaper_drops}" -ge 0 ]] 2>/dev/null && \
+			     (( _sdrop_pkts >= warn_shaper_drops )) 2>/dev/null; then
+				_shp_state="${status_warn}"
+				(( _shp_any_warn++ ))
+				fg_problem_output+="${status_warn} - Shaper ${_fwn}${_shp_vp}${_sname}: ${_sdrop_pkts} pkts dropped\n"
+			fi
+
+			if [[ -n "${verbose}" || "${_shp_state}" != "${status_ok}" ]]; then
+				_shp_bw_s=" | max: ${_smbw} ${_sbwunit}"
+				[[ "${_sbw_used}" -gt 0 ]] 2>/dev/null && \
+					_shp_bw_s=" | bw: ${_sbw_used}/${_smbw} ${_sbwunit}"
+				fg_output+="${_shp_state} - Shaper ${_fwn}${_shp_vp}${_sname}: dropped: ${_sdrop_pkts} pkts / ${_sdrop_bytes} bytes${_shp_bw_s}\n"
+			fi
+
+			_shp_lbl="${_shp_vp//\//_}${_sname// /_}"
+			_shp_lbl="${_shp_lbl//-/_}"
+			fg_perf+=" shaper_${_shp_lbl}_dropped_pkts=${_sdrop_pkts};${warn_shaper_drops};${crit_shaper_drops}"
+			fg_perf+=" shaper_${_shp_lbl}_dropped_bytes=${_sdrop_bytes}"
+			fg_perf+=" shaper_${_shp_lbl}_bw_used=${_sbw_used}"
+			[[ "${_smbw}" -gt 0 ]] && fg_perf+=" shaper_${_shp_lbl}_max_bw=${_smbw}"
+		done < <(echo "${_shp_buf_cmdb}" | "${JQ}" --unbuffered -r '
+			.results[]? | [
+				(.name // ""),
+				((.["guaranteed-bandwidth"] // 0) | tostring),
+				((.["maximum-bandwidth"]    // 0) | tostring),
+				(.["bandwidth-unit"] // "kbps"),
+				(.priority // "")
+			] | join("\t")' 2>/dev/null)
+
+		unset _shp_mdrop_pkts _shp_mdrop_bytes _shp_mbw_used
+	done
+
+	if [[ "${_shp_any_data}" -eq 1 ]]; then
+		_shp_vdom_s=""
+		if [[ -n "${shaper_vdom}" ]]; then
+			_shp_vdom_s=" (${shaper_vdom})"
+		elif [[ "${#_shp_auto_vdoms[@]}" -gt 0 ]]; then
+			_shp_vdom_s=" ($(IFS=','; echo "${_shp_auto_vdoms[*]}"))"
+		fi
+		if [[ "${_shp_count}" -eq 0 ]]; then
+			fg_output+="${status_ok} - Shapers${_fws}none configured${_shp_vdom_s}\n"
+		elif [[ "${_shp_any_crit}" -gt 0 ]]; then
+			fg_output+="${status_crit} - Shapers${_fws}${_shp_count} shaper(s)${_shp_vdom_s} | total dropped: ${_shp_total_drop_pkts} pkts | ${_shp_any_crit} above crit threshold\n"
+		elif [[ "${_shp_any_warn}" -gt 0 ]]; then
+			fg_output+="${status_warn} - Shapers${_fws}${_shp_count} shaper(s)${_shp_vdom_s} | total dropped: ${_shp_total_drop_pkts} pkts | ${_shp_any_warn} above warn threshold\n"
+		else
+			fg_output+="${status_ok} - Shapers${_fws}${_shp_count} shaper(s)${_shp_vdom_s} | total dropped: ${_shp_total_drop_pkts} pkts\n"
+		fi
+		fg_perf+=" shaper_total_dropped_pkts=${_shp_total_drop_pkts}"
+	else
+		fg_output+="${status_ok} - Shapers${_fws}endpoint not available\n"
+	fi
+	unset _shp_files_cmdb _shp_files_mon _shp_vpfx
 
 	if [[ -n "${verbose}" ]]; then
 		fg_output+="---------------------------------------\n\n"
