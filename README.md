@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Shell Script](https://img.shields.io/badge/Shell-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Monitoring](https://img.shields.io/badge/Monitoring-Icinga%2FNagios-blue.svg)](https://icinga.com/)
-[![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.4.0-orange.svg)](CHANGELOG.md)
 
 A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, compatible with Icinga and Nagios monitoring systems. This plugin monitors system health, resources, VPN, SD-WAN, security services, licenses, certificates, and more — directly via the FortiGate REST API v2 and/or SNMP. No FortiManager required.
 
