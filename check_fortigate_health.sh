@@ -33,12 +33,25 @@
 #                    _shp_mon_get tries /select, scope=vdom, and base endpoint variants in order
 # 2.4.0  2026-06-08  --no-prefetch: serial API fetch mode for hardened systems; --tmp-dir <path>:
 #                    use alternative temp directory when /tmp is restricted
+# 2.5.0  2026-06-09  -eLB: load balancer virtual server check (server-load-balance VIPs only);
+#                    per-VIP RS count/state; WARN on disabled RS, CRIT on no active RS;
+#                    --lb-vdom for VDOM-specific queries; auto-queries all VDOMs by default
+# 2.6.0  2026-06-09  -eLB now uses monitor/firewall/load-balance (required count= param was
+#                    missing); RS health state (up/down) from health probe now reported;
+#                    mode (active/standby/disabled) shown alongside health; CRIT when all RS
+#                    down, WARN when some RS down or disabled; RTT and sessions in verbose
+# 2.7.0  2026-06-09  -eLB: --blacklist-lb-vip to skip VIPs by name;
+#                    --blacklist-lb-rs to skip real servers by IP or IP:port
+# 2.8.0  2026-06-09  -eLB: bytes_processed, active_sessions, monitor_events added to verbose
+#                    RS output (human-readable bytes) and perfdata (per-RS and per-VIP totals);
+#                    aggregate sessions/bytes/events shown on VIP summary line; perfdata uses
+#                    plain numeric values (no c-suffix) consistent with rest of plugin
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.4.0"
+REVISION="2.8.0"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -211,7 +224,7 @@ Options:
  -eSys,     --enable-system
     System info: model, serial, hostname, FortiOS version, uptime, HA role
  -eRes,     --enable-resources
-    Resource usage: CPU%, memory%, sessions, setup rate (thresholds: -wCPU/-cCPU, -wMem/-cMem)
+    Resource usage: CPU%, memory%, sessions, session rate (thresholds: -wCPU/-cCPU, -wMem/-cMem)
     Session count: --warn-sessions/--crit-sessions (default -1=disabled, absolute count)
     Session limit %: --warn-sessions-pct/--crit-sessions-pct (default 80/90%, vs hardware session_limit)
  -eHA,      --enable-ha
@@ -297,7 +310,11 @@ Options:
     Traffic shaper statistics: per-shaper total packets/bytes, bandwidth usage, active sessions,
     dropped packets/bytes; alert thresholds: --warn-shaper-drops/--crit-shaper-drops (default: -1)
     --shaper-vdom <vdom[,vdom,...]>  query specific VDOM(s) only; comma-separated;
-                                     default: auto-queries ALL VDOMs on the device
+ -eLB,      --enable-lb                                                 (REST only)
+    Load balancer virtual server health: per-VIP real server health (up/down from health
+    probes) and mode (active/standby/disabled); CRIT when all RS are down, WARN when some
+    RS down or disabled; RTT and active sessions shown in verbose mode;
+    --lb-vdom <vdom[,vdom,...]>  query specific VDOM(s); default: all VDOMs
  -eSecRating,--enable-secrating                                          (REST only)
     Security Fabric security rating: overall score, grade, per-category pass/warn/fail counts,
     and failed check names; thresholds: --warn-secrating-score/--crit-secrating-score
@@ -330,7 +347,8 @@ Options:
  --disable-utm           --disable-storage       --disable-forticloud
  --disable-license       --disable-certs         --disable-alerts
  --disable-uptime        --disable-firmware      --disable-sensors
- --disable-fwstats       --disable-shaper        --disable-logwatch
+ --disable-fwstats       --disable-shaper        --disable-lb
+ --disable-logwatch
 
  -w,  --warning  <integer>
     WARNING threshold for disk usage in % (default: 80)
@@ -396,6 +414,10 @@ Options:
     Comma-separated list of interface names to skip entirely (e.g. port1,mgmt)
  --blacklist-vpn <list>
     Comma-separated list of VPN tunnel names to skip
+ --blacklist-lb-vip <list>
+    Comma-separated list of LB virtual server names to skip entirely (e.g. vip1,vip2)
+ --blacklist-lb-rs <list>
+    Comma-separated list of real server IPs or IP:port to skip (e.g. 10.0.0.1,10.0.0.2:8080)
  --blacklist-certs <list>, --blacklist-cert <list>
     Comma-separated list of certificate names to skip
  --ignore-license <list>
@@ -550,6 +572,9 @@ while [[ -n "${1}" ]]; do
 	-eShaper|--enable-shaper)
 		enable_shaper=1
 		;;
+	-eLB|--enable-lb)
+		enable_lb=1
+		;;
 	-eNTP|--enable-ntp)
 		enable_ntp=1
 		;;
@@ -635,6 +660,7 @@ while [[ -n "${1}" ]]; do
 	--disable-sensors)      disable_sensors=1 ;;
 	--disable-fwstats)      disable_fwstats=1 ;;
 	--disable-shaper)       disable_shaper=1 ;;
+	--disable-lb)           disable_lb=1 ;;
 	--disable-ntp)          disable_ntp=1 ;;
 	--disable-sdwan)        disable_sdwan=1 ;;
 	--disable-ap)           disable_ap=1 ;;
@@ -783,6 +809,10 @@ while [[ -n "${1}" ]]; do
 	--shaper-vdom)
 		shift
 		shaper_vdom="${1}"
+		;;
+	--lb-vdom)
+		shift
+		lb_vdom="${1}"
 		;;
 	--warn-disk)
 		shift
@@ -970,6 +1000,14 @@ while [[ -n "${1}" ]]; do
 		shift
 		vpn_blacklist="${1}"
 		;;
+	--blacklist-lb-vip)
+		shift
+		lb_blacklist_vip="${1}"
+		;;
+	--blacklist-lb-rs)
+		shift
+		lb_blacklist_rs="${1}"
+		;;
 	--blacklist-certs|--blacklist-cert)
 		shift
 		cert_blacklist="${1}"
@@ -1047,6 +1085,7 @@ done
 -z "${enable_sensors}"  &&
 -z "${enable_fwstats}"  &&
 -z "${enable_shaper}"   &&
+-z "${enable_lb}"      &&
 -z "${enable_ntp}"      &&
 -z "${enable_uptime}"   &&
 -z "${enable_sdwan}"    &&
@@ -1471,6 +1510,17 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 		_pf_get "${FG_API}/cmdb/system/vdom?start=0&count=100"                          vdom_list.json
 	fi
 }
+[[ ( -n "${enable_lb}" || -n "${enable_all}" ) && -z "${disable_lb}" ]] && {
+	if [[ -n "${lb_vdom}" ]]; then
+		IFS=',' read -ra _lb_pf_vdoms <<< "${lb_vdom}"
+		for _lb_pf_v in "${_lb_pf_vdoms[@]}"; do
+			_lb_pf_v="${_lb_pf_v// /}"
+			_pf_get "${FG_API}/monitor/firewall/load-balance?count=500&vdom=${_lb_pf_v}" "lb_mon_${_lb_pf_v}.json"
+		done
+	else
+		_pf_get "${FG_API}/monitor/firewall/load-balance?count=500" lb_mon_root.json
+	fi
+}
 [[ ( -n "${enable_ntp}"   || -n "${enable_all}" ) && -z "${disable_ntp}"   ]] && \
 	_pf_get "${FG_API}/monitor/system/ntp/status"                                       ntp_status.json
 [[ ( -n "${enable_sdwan}" || -n "${enable_all}" ) && -z "${disable_sdwan}" ]] && {
@@ -1816,7 +1866,7 @@ if [[ ( -n "${enable_res}" || -n "${enable_all}" ) && -z "${disable_res}" ]]; th
 		[[ "${_npu_sessions}" != "0" && "${_npu_sessions}" != "null" ]] && \
 			_sess_detail+=" | NPU sessions: ${_npu_sessions}"
 		[[ "${_setup_rate}" != "0" && "${_setup_rate}" != "null" ]] && \
-			_sess_detail+=" | Setup rate: ${_setup_rate}/s"
+			_sess_detail+=" | Session rate: ${_setup_rate}/s"
 		_mem_detail=""
 		if [[ "${_mem_total_kb}" =~ ^[0-9]+$ && "${_mem_total_kb}" -gt 0 ]]; then
 			_mem_total_mb=$(( _mem_total_kb / 1024 ))
@@ -5046,6 +5096,225 @@ if [[ ( -n "${enable_shaper}" || -n "${enable_all}" ) && -z "${disable_shaper}" 
 		fg_output+="${status_ok} - Shapers${_fws}endpoint not available\n"
 	fi
 	unset _shp_files_cmdb _shp_files_mon _shp_vpfx
+
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="---------------------------------------\n\n"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Load Balancer / Virtual Server Check
+# ---------------------------------------------------------------------------
+if [[ ( -n "${enable_lb}" || -n "${enable_all}" ) && -z "${disable_lb}" ]]; then
+	if [[ -n "${verbose}" ]]; then
+		fg_output+="Load Balancer Virtual Servers:\n---------------------------------------\n"
+	fi
+
+	declare -a _lb_mon_files=() _lb_mon_vpfx=()
+	if [[ -n "${lb_vdom}" ]]; then
+		IFS=',' read -ra _lb_vdom_list <<< "${lb_vdom}"
+		for _lv in "${_lb_vdom_list[@]}"; do
+			_lv="${_lv// /}"
+			_lb_mon_files+=("${_pf}/lb_mon_${_lv}.json")
+			_lb_mon_vpfx+=("${_lv}/")
+		done
+	else
+		_lb_mon_files+=("${_pf}/lb_mon_root.json")
+		_lb_mon_vpfx+=("")
+	fi
+
+	declare -a _lb_vip_order=()
+	declare -A _lb_vip_seen=() _lb_vip_extip=() _lb_vip_extport=() _lb_vip_vtype=() \
+	            _lb_vip_rs_total=() _lb_vip_rs_up=() _lb_vip_rs_down=() \
+	            _lb_vip_rs_disabled=() _lb_vip_rs_lines=() \
+	            _lb_vip_sessions=() _lb_vip_bytes=() _lb_vip_events=()
+	_lb_total_vips=0
+	_lb_total_rs=0
+	_lb_total_rs_up=0
+	_lb_total_rs_down=0
+	_lb_total_rs_disabled=0
+	_lb_any_crit=0
+	_lb_any_warn=0
+	_lb_any_data=0
+
+	declare -A _lb_bl_vip_map=() _lb_bl_rs_map=()
+	if [[ -n "${lb_blacklist_vip:-}" ]]; then
+		IFS=',' read -ra _lb_bl_vip_arr <<< "${lb_blacklist_vip}"
+		for _e in "${_lb_bl_vip_arr[@]}"; do _lb_bl_vip_map["${_e// /}"]=1; done
+	fi
+	if [[ -n "${lb_blacklist_rs:-}" ]]; then
+		IFS=',' read -ra _lb_bl_rs_arr <<< "${lb_blacklist_rs}"
+		for _e in "${_lb_bl_rs_arr[@]}"; do _lb_bl_rs_map["${_e// /}"]=1; done
+	fi
+
+	for _lb_fi in "${!_lb_mon_files[@]}"; do
+		_lb_buf=$(cat "${_lb_mon_files[_lb_fi]}" 2>/dev/null)
+		[[ -z "${_lb_buf}" ]] && continue
+		# Monitor format: results[] contain virtual_server_name
+		"${JQ}" -e '[.results[]? | select(.virtual_server_name != null)] | length > 0' \
+			<<< "${_lb_buf}" >/dev/null 2>&1 || continue
+		_lb_any_data=1
+		_lb_vp="${_lb_mon_vpfx[_lb_fi]}"
+
+		while IFS=$'\t' read -r _vname _vip _vport _vtype _rsip _rsport _rshealth _rsmode _rssess _rsbytes _rsevents _rsrtt; do
+			[[ -z "${_vname}" ]] && continue
+			[[ -n "${_lb_bl_vip_map[${_vname}]:-}" ]] && continue
+			_vk="${_lb_vp}${_vname}"
+
+			if [[ -z "${_lb_vip_seen[${_vk}]:-}" ]]; then
+				_lb_vip_seen["${_vk}"]=1
+				_lb_vip_extip["${_vk}"]="${_vip}"
+				_lb_vip_extport["${_vk}"]="${_vport}"
+				_lb_vip_vtype["${_vk}"]="${_vtype}"
+				_lb_vip_rs_total["${_vk}"]=0
+				_lb_vip_rs_up["${_vk}"]=0
+				_lb_vip_rs_down["${_vk}"]=0
+				_lb_vip_rs_disabled["${_vk}"]=0
+				_lb_vip_rs_lines["${_vk}"]=""
+				_lb_vip_sessions["${_vk}"]=0
+				_lb_vip_bytes["${_vk}"]=0
+				_lb_vip_events["${_vk}"]=0
+				_lb_vip_order+=("${_vk}")
+				(( _lb_total_vips++ ))
+			fi
+
+			[[ -z "${_rsip}" ]] && continue
+			[[ -n "${_lb_bl_rs_map[${_rsip}]:-}" || -n "${_lb_bl_rs_map[${_rsip}:${_rsport}]:-}" ]] && continue
+			(( _lb_vip_rs_total["${_vk}"]++ ))
+			(( _lb_total_rs++ ))
+
+			if [[ "${_rsmode}" == "disabled" ]]; then
+				(( _lb_vip_rs_disabled["${_vk}"]++ ))
+				(( _lb_total_rs_disabled++ ))
+				_rs_line_state="${status_warn}"
+			elif [[ "${_rshealth}" == "down" ]]; then
+				(( _lb_vip_rs_down["${_vk}"]++ ))
+				(( _lb_total_rs_down++ ))
+				_rs_line_state="${status_crit}"
+			else
+				(( _lb_vip_rs_up["${_vk}"]++ ))
+				(( _lb_total_rs_up++ ))
+				_rs_line_state="${status_ok}"
+			fi
+
+			[[ "${_rssess}"   =~ ^[0-9]+$ ]] && (( _lb_vip_sessions["${_vk}"] += _rssess ))
+			[[ "${_rsbytes}"  =~ ^[0-9]+$ ]] && (( _lb_vip_bytes["${_vk}"]   += _rsbytes ))
+			[[ "${_rsevents}" =~ ^[0-9]+$ ]] && (( _lb_vip_events["${_vk}"]  += _rsevents ))
+
+			_rs_detail="${_rshealth}, ${_rsmode}"
+			[[ "${_rssess}"   =~ ^[0-9]+$ && "${_rssess}"   -gt 0 ]] && _rs_detail+=", ${_rssess} sess"
+			[[ "${_rsbytes}"  =~ ^[0-9]+$ && "${_rsbytes}"  -gt 0 ]] && \
+				_rs_detail+=", $(echo "${_rsbytes}" | "${AWK}" '{if($1>=1073741824) printf "%.1f GB",$1/1073741824; else if($1>=1048576) printf "%.1f MB",$1/1048576; else if($1>=1024) printf "%.1f kB",$1/1024; else printf "%d B",$1}')"
+			[[ "${_rsevents}" =~ ^[0-9]+$ && "${_rsevents}" -gt 0 ]] && _rs_detail+=", ${_rsevents} events"
+			[[ -n "${_rsrtt}" ]] && _rs_detail+=", RTT: ${_rsrtt}s"
+
+			_rs_lbl="${_vk//\//_}"; _rs_lbl="${_rs_lbl// /_}"; _rs_lbl="${_rs_lbl//-/_}"
+			_rs_lbl+="_${_rsip//./_}_${_rsport}"
+			fg_perf+=" lb_${_rs_lbl}_sessions=${_rssess:-0}"
+			fg_perf+=" lb_${_rs_lbl}_bytes=${_rsbytes:-0}"
+			fg_perf+=" lb_${_rs_lbl}_events=${_rsevents:-0}"
+
+			_lb_vip_rs_lines["${_vk}"]+="${_rs_line_state} -   RS ${_fwn}${_vk}: ${_rsip}:${_rsport} (${_rs_detail})\n"
+		done < <("${JQ}" --unbuffered -r '
+			.results[]? | . as $v |
+			if (($v.list // []) | length) > 0 then
+				$v.list[] | [
+					$v.virtual_server_name,
+					($v.virtual_server_ip // ""),
+					($v.virtual_server_port | tostring),
+					($v.virtual_server_type // "ipv4"),
+					(.real_server_ip // ""),
+					(.real_server_port | tostring),
+					(.status // ""),
+					(.mode // ""),
+					((.active_sessions  // 0) | tostring),
+					((.bytes_processed  // 0) | tostring),
+					((.monitor_events   // 0) | tostring),
+					(.RTT // "")
+				]
+			else
+				[$v.virtual_server_name, ($v.virtual_server_ip // ""),
+				 ($v.virtual_server_port | tostring), ($v.virtual_server_type // "ipv4"),
+				 "", "0", "", "", "0", "0", "0", ""]
+			end | join("\t")' <<< "${_lb_buf}" 2>/dev/null)
+	done
+
+	# Output per-VIP summary + optional per-RS lines
+	for _vk in "${_lb_vip_order[@]}"; do
+		_v_up="${_lb_vip_rs_up[${_vk}]}"
+		_v_down="${_lb_vip_rs_down[${_vk}]}"
+		_v_disabled="${_lb_vip_rs_disabled[${_vk}]}"
+		_v_total="${_lb_vip_rs_total[${_vk}]}"
+		_v_extip="${_lb_vip_extip[${_vk}]}"
+		_v_extport="${_lb_vip_extport[${_vk}]}"
+		_v_vtype="${_lb_vip_vtype[${_vk}]}"
+
+		_v_state="${status_ok}"
+		_v_detail=""
+		if [[ "${_v_total}" -gt 0 && "${_v_up}" -eq 0 && "${_v_down}" -gt 0 ]]; then
+			_v_state="${status_crit}"
+			_v_detail=" (all RS down)"
+			(( _lb_any_crit++ ))
+		elif [[ "${_v_down}" -gt 0 ]]; then
+			_v_state="${status_warn}"
+			_v_detail=" (${_v_down}/${_v_total} RS down)"
+			(( _lb_any_warn++ ))
+		elif [[ "${_v_disabled}" -gt 0 ]]; then
+			_v_state="${status_warn}"
+			_v_detail=" (${_v_disabled}/${_v_total} RS disabled)"
+			(( _lb_any_warn++ ))
+		fi
+
+		_v_sess="${_lb_vip_sessions[${_vk}]:-0}"
+		_v_bytes="${_lb_vip_bytes[${_vk}]:-0}"
+		_v_events="${_lb_vip_events[${_vk}]:-0}"
+		_v_stats=""
+		[[ "${_v_sess}"   -gt 0 ]] && _v_stats+=" | ${_v_sess} sess"
+		[[ "${_v_bytes}"  -gt 0 ]] && _v_stats+=" | $(echo "${_v_bytes}" | "${AWK}" '{if($1>=1073741824) printf "%.1f GB",$1/1073741824; else if($1>=1048576) printf "%.1f MB",$1/1048576; else if($1>=1024) printf "%.1f kB",$1/1024; else printf "%d B",$1}')"
+		[[ "${_v_events}" -gt 0 ]] && _v_stats+=" | ${_v_events} events"
+
+		if [[ -n "${verbose}" || "${_v_state}" != "${status_ok}" ]]; then
+			fg_output+="${_v_state} - VirtualServer ${_fwn}${_vk} (${_v_extip}:${_v_extport}/${_v_vtype}): ${_v_up}/${_v_total} RS up${_v_detail}${_v_stats}\n"
+			[[ -n "${verbose}" && -n "${_lb_vip_rs_lines[${_vk}]}" ]] && \
+				fg_output+="${_lb_vip_rs_lines[${_vk}]}"
+		fi
+
+		[[ "${_v_state}" != "${status_ok}" ]] && \
+			fg_problem_output+="${_v_state} - VirtualServer ${_fwn}${_vk} (${_v_extip}:${_v_extport}/${_v_vtype}): ${_v_up}/${_v_total} RS up${_v_detail}\n"
+
+		_lb_lbl="${_vk//\//_}"; _lb_lbl="${_lb_lbl// /_}"; _lb_lbl="${_lb_lbl//-/_}"
+		fg_perf+=" lb_${_lb_lbl}_rs_total=${_v_total} lb_${_lb_lbl}_rs_up=${_v_up}"
+		[[ "${_v_down}"     -gt 0 ]] && fg_perf+=" lb_${_lb_lbl}_rs_down=${_v_down}"
+		[[ "${_v_disabled}" -gt 0 ]] && fg_perf+=" lb_${_lb_lbl}_rs_disabled=${_v_disabled}"
+		fg_perf+=" lb_${_lb_lbl}_sessions=${_v_sess}"
+		fg_perf+=" lb_${_lb_lbl}_bytes=${_v_bytes}"
+		fg_perf+=" lb_${_lb_lbl}_events=${_v_events}"
+	done
+
+	if [[ "${_lb_any_data}" -eq 1 ]]; then
+		_lb_vdom_s=""
+		[[ -n "${lb_vdom}" ]] && _lb_vdom_s=" (${lb_vdom})"
+		if [[ "${_lb_total_vips}" -eq 0 ]]; then
+			fg_output+="${status_ok} - Load Balancer${_fws}none configured${_lb_vdom_s}\n"
+		elif [[ "${_lb_any_crit}" -gt 0 ]]; then
+			fg_output+="${status_crit} - Load Balancer${_fws}${_lb_total_vips} VIP(s)${_lb_vdom_s} | RS: ${_lb_total_rs_up}/${_lb_total_rs} up | ${_lb_any_crit} VIP(s) with all RS down\n"
+		elif [[ "${_lb_any_warn}" -gt 0 ]]; then
+			_lb_warn_detail=""
+			[[ "${_lb_total_rs_down}"     -gt 0 ]] && _lb_warn_detail+=" | ${_lb_total_rs_down} RS down"
+			[[ "${_lb_total_rs_disabled}" -gt 0 ]] && _lb_warn_detail+=" | ${_lb_total_rs_disabled} RS disabled"
+			fg_output+="${status_warn} - Load Balancer${_fws}${_lb_total_vips} VIP(s)${_lb_vdom_s} | RS: ${_lb_total_rs_up}/${_lb_total_rs} up${_lb_warn_detail}\n"
+		else
+			fg_output+="${status_ok} - Load Balancer${_fws}${_lb_total_vips} VIP(s)${_lb_vdom_s} | RS: ${_lb_total_rs_up}/${_lb_total_rs} up\n"
+		fi
+		fg_perf+=" lb_total_vips=${_lb_total_vips} lb_rs_total=${_lb_total_rs} lb_rs_up=${_lb_total_rs_up}"
+		[[ "${_lb_total_rs_down}" -gt 0 ]] && fg_perf+=" lb_rs_down=${_lb_total_rs_down}"
+	else
+		fg_output+="${status_unknown} - Load Balancer${_fws}no data (endpoint: monitor/firewall/load-balance)\n"
+	fi
+	unset _lb_mon_files _lb_mon_vpfx _lb_vip_order _lb_vip_seen _lb_vip_extip _lb_vip_extport \
+	      _lb_vip_vtype _lb_vip_rs_total _lb_vip_rs_up _lb_vip_rs_down \
+	      _lb_vip_rs_disabled _lb_vip_rs_lines _lb_vip_sessions _lb_vip_bytes _lb_vip_events \
+	      _lb_bl_vip_map _lb_bl_rs_map
 
 	if [[ -n "${verbose}" ]]; then
 		fg_output+="---------------------------------------\n\n"
