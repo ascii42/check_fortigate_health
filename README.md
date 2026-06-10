@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Shell Script](https://img.shields.io/badge/Shell-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Monitoring](https://img.shields.io/badge/Monitoring-Icinga%2FNagios-blue.svg)](https://icinga.com/)
-[![Version](https://img.shields.io/badge/version-2.8.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.9.0-orange.svg)](CHANGELOG.md)
 
 A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, compatible with Icinga and Nagios monitoring systems. This plugin monitors system health, resources, VPN, SD-WAN, security services, licenses, certificates, and more — directly via the FortiGate REST API v2 and/or SNMP. No FortiManager required.
 
@@ -125,6 +125,7 @@ If any `-eX` flag is given, **only those modules** run. When no flags are given,
 | `-eFirmware` | `--enable-firmware` | Installed firmware version vs. available GA updates; includes FortiAP firmware |
 | `-eSensor` | `--enable-sensors` | Hardware sensors: temperature, voltage, fan speed |
 | `-eFWStats` | `--enable-fwstats` | Firewall policy byte/session/hit counters |
+| `-eShaper` | `--enable-shaper` | Traffic shaper stats: per-shaper dropped packets/bytes, bandwidth usage; use `--shaper-vdom` for VDOM-specific queries |
 | `-eLogwatch` | `--enable-logwatch` | Log event monitoring — **not included in `-A`**, must be enabled explicitly |
 | `-A` | `--enable-all` | Enable all checks (default when no `-eX` flag is given) |
 
@@ -197,6 +198,10 @@ Suppress individual modules when running the full check set:
 | `--crit-uptime <minutes>` | 0 | CRITICAL if uptime is below this value in minutes (0 = disabled) |
 | `--warn-ni-errors <n>` | -1 | WARNING threshold for interface total error counter (-1 = disabled) |
 | `--crit-ni-errors <n>` | -1 | CRITICAL threshold for interface total error counter (-1 = disabled) |
+| `--warn-ni-drops <n>` | -1 | WARNING threshold for interface total drop counter (-1 = disabled) |
+| `--crit-ni-drops <n>` | -1 | CRITICAL threshold for interface total drop counter (-1 = disabled) |
+| `--warn-shaper-drops <n>` | -1 | WARNING when dropped packets for any shaper exceed N (-1 = disabled) |
+| `--crit-shaper-drops <n>` | -1 | CRITICAL when dropped packets for any shaper exceed N (-1 = disabled) |
 
 ### Filter Options
 
@@ -253,6 +258,8 @@ Without `--logwatch-eventids` or `--logwatch-actions`, severity is derived from 
 |--------|-------------|
 | `--no-perfdata` | Suppress the perfdata section entirely (no `\|` output) |
 | `--perfdata` | Explicitly request perfdata output (default when not suppressed) |
+| `--no-prefetch` | Disable parallel background API fetching; all calls run serially. Use on hardened systems where background subshells or `/tmp` writes are restricted. |
+| `--tmp-dir <path>` | Use `<path>` instead of `/tmp` for temp files. Required when `/tmp` is `noexec` or not writable; directory must already exist. |
 | `-s, --silent` | Show only problem lines (suppress OK detail) |
 | `-v, --verbose` | Print section headers and full per-item detail |
 | `--append-fw-name` | Prefix every output line with the device hostname (default: hostname suppressed) |
@@ -310,6 +317,26 @@ Alert when IPS detections or AV events exceed thresholds since last boot:
 ```bash
 ./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -SC public -eUTM \
   --warn-ips 1000 --crit-ips 5000 --warn-av 100 --crit-av 500
+```
+
+### Traffic Shaper Statistics
+By default `-eShaper` queries **all VDOMs** automatically. Use `--shaper-vdom` to restrict:
+```bash
+# All VDOMs — auto-detected, per-shaper drops alert:
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -eShaper \
+  --warn-shaper-drops 1000 --crit-shaper-drops 10000
+# [OK] - Shapers: 5 shaper(s) (root,wan) | total dropped: 0 pkts
+# | shaper_root_default_dropped_pkts=0 shaper_wan_high_priority_dropped_pkts=0;1000;10000 ...
+
+# Restrict to specific VDOM only:
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -eShaper \
+  --shaper-vdom wan --warn-shaper-drops 0 --crit-shaper-drops 1000
+```
+
+Also alert on interface packet drops:
+```bash
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -eNI \
+  --warn-ni-drops 100 --crit-ni-drops 1000
 ```
 
 ### Log Event Monitoring for IPS and Anomaly
