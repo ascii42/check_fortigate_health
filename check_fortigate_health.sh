@@ -46,12 +46,17 @@
 #                    RS output (human-readable bytes) and perfdata (per-RS and per-VIP totals);
 #                    aggregate sessions/bytes/events shown on VIP summary line; perfdata uses
 #                    plain numeric values (no c-suffix) consistent with rest of plugin
+# 2.9.0  2026-06-10  -eDHCP: fix threshold comparison broken when % suffix passed (bash
+#                    arithmetic silently failed on "85%"); fix %% double-percent display bug;
+#                    fix invalid perfdata thresholds; N% = percentage of used leases;
+#                    plain number = free leases remaining (inverted: alert when free < N);
+#                    perfdata: free metric with Nagios range syntax (N:) in absolute mode
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.8.0"
+REVISION="2.9.0"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -254,7 +259,8 @@ Options:
     FortiExtender managed extenders: status
     (FEX firmware version shown in -eFirmware verbose section)
  -eDHCP,    --enable-dhcp                                                (REST only)
-    DHCP pool usage per server (pool size via ip-range, active leases); --warn/crit-dhcp-usage (%)
+    DHCP pool usage per server (pool size via ip-range, active leases);
+    --warn/crit-dhcp-usage: percentage threshold (e.g. 85%) or absolute lease count (e.g. 100);
     Exclude specific pools: --exclude-dhcp "iface1,iface2"
  -eIPAM,    --enable-ipam                                                (REST only)
     FortiIPAM status: enabled/disabled, server type, pool/rule counts, allocated/available subnets,
@@ -1137,8 +1143,8 @@ done
 [[ -z "${crit_ap_down}" ]]      && crit_ap_down=1
 [[ -z "${warn_ap_clients}" ]]   && warn_ap_clients=-1
 [[ -z "${crit_ap_clients}" ]]   && crit_ap_clients=-1
-[[ -z "${warn_dhcp_usage}" ]]   && warn_dhcp_usage=85
-[[ -z "${crit_dhcp_usage}" ]]   && crit_dhcp_usage=90
+[[ -z "${warn_dhcp_usage}" ]]   && warn_dhcp_usage=85%
+[[ -z "${crit_dhcp_usage}" ]]   && crit_dhcp_usage=90%
 [[ -z "${warn_ipam_usage}" ]]       && warn_ipam_usage=80
 [[ -z "${crit_ipam_usage}" ]]       && crit_ipam_usage=90
 [[ -z "${warn_secrating_score}" ]]  && warn_secrating_score=-1
@@ -3100,6 +3106,24 @@ if [[ ( -n "${enable_dhcp}" || -n "${enable_all}" ) && -z "${disable_dhcp}" ]]; 
 		_dhcp_warn_count=0 ; _dhcp_crit_count=0
 		declare -a _dhcp_prob_lines
 
+		# Parse threshold mode: trailing % → percentage; plain number → free leases remaining
+		_dhcp_warn_pct="" ; _dhcp_warn_abs=""
+		_dhcp_crit_pct="" ; _dhcp_crit_abs=""
+		if [[ "${warn_dhcp_usage}" == *% ]]; then
+			_dhcp_warn_pct="${warn_dhcp_usage%\%}"
+		else
+			_dhcp_warn_abs="${warn_dhcp_usage}"
+		fi
+		if [[ "${crit_dhcp_usage}" == *% ]]; then
+			_dhcp_crit_pct="${crit_dhcp_usage%\%}"
+		else
+			_dhcp_crit_abs="${crit_dhcp_usage}"
+		fi
+		# Display string for thresholds
+		_dhcp_thr_warn="${warn_dhcp_usage}"; _dhcp_thr_crit="${crit_dhcp_usage}"
+		[[ -n "${_dhcp_warn_abs}" ]] && _dhcp_thr_warn="${_dhcp_warn_abs} free"
+		[[ -n "${_dhcp_crit_abs}" ]] && _dhcp_thr_crit="${_dhcp_crit_abs} free"
+
 		while IFS=$'\t' read -r _sid _siface _sresv _sranges; do
 			[[ -n "${_dhcp_excl_map[${_siface}]}" ]] && continue
 			(( _dhcp_servers++ ))
@@ -3124,25 +3148,36 @@ if [[ ( -n "${enable_dhcp}" || -n "${enable_all}" ) && -z "${disable_dhcp}" ]]; 
 
 			_usage_pct=0
 			[[ "${_pool_size}" -gt 0 ]] && _usage_pct=$(( _leases * 100 / _pool_size ))
+			_free=$(( _pool_size - _leases ))
 
 			_dhcp_state="${status_ok}"
-			if (( _usage_pct >= crit_dhcp_usage )) 2>/dev/null; then
+			if { [[ -n "${_dhcp_crit_pct}" && "${_usage_pct}" -ge "${_dhcp_crit_pct}" ]] || \
+			     [[ -n "${_dhcp_crit_abs}" && "${_free}"      -lt "${_dhcp_crit_abs}" ]]; }; then
 				_dhcp_state="${status_crit}" ; (( _dhcp_crit_count++ ))
-				_dhcp_prob_lines+=("${status_crit} - DHCP ${_fwn}${_siface}: ${_leases}/${_pool_size} leases (${_usage_pct}%) CRITICAL (crit: ${crit_dhcp_usage}%)")
-			elif (( _usage_pct >= warn_dhcp_usage )) 2>/dev/null; then
+				_dhcp_prob_lines+=("${status_crit} - DHCP ${_fwn}${_siface}: ${_leases}/${_pool_size} leases (${_usage_pct}%, ${_free} free) (crit: ${_dhcp_thr_crit})")
+			elif { [[ -n "${_dhcp_warn_pct}" && "${_usage_pct}" -ge "${_dhcp_warn_pct}" ]] || \
+			       [[ -n "${_dhcp_warn_abs}" && "${_free}"      -lt "${_dhcp_warn_abs}" ]]; }; then
 				_dhcp_state="${status_warn}" ; (( _dhcp_warn_count++ ))
-				_dhcp_prob_lines+=("${status_warn} - DHCP ${_fwn}${_siface}: ${_leases}/${_pool_size} leases (${_usage_pct}%) WARNING (warn: ${warn_dhcp_usage}%)")
+				_dhcp_prob_lines+=("${status_warn} - DHCP ${_fwn}${_siface}: ${_leases}/${_pool_size} leases (${_usage_pct}%, ${_free} free) (warn: ${_dhcp_thr_warn})")
 			fi
 
 			if [[ -n "${verbose}" ]]; then
 				_resv_s=""
 				[[ "${_sresv}" =~ ^[0-9]+$ && "${_sresv}" -gt 0 ]] && _resv_s=" | reservations: ${_sresv}"
-				fg_output+="${_dhcp_state} - DHCP ${_fwn}${_siface}: ${_leases}/${_pool_size} leases (${_usage_pct}%) (warn: ${warn_dhcp_usage}%, crit: ${crit_dhcp_usage}%)${_resv_s}\n"
+				_free_s=""; [[ -n "${_dhcp_warn_abs}" || -n "${_dhcp_crit_abs}" ]] && _free_s=", ${_free} free"
+				fg_output+="${_dhcp_state} - DHCP ${_fwn}${_siface}: ${_leases}/${_pool_size} leases (${_usage_pct}%${_free_s}) (warn: ${_dhcp_thr_warn}, crit: ${_dhcp_thr_crit})${_resv_s}\n"
 			fi
 
 			fg_perf+=" dhcp_${_sif_lbl}_pool=${_pool_size}"
-			fg_perf+=" dhcp_${_sif_lbl}_leases=${_leases}"
-			fg_perf+=" dhcp_${_sif_lbl}_pct=${_usage_pct};${warn_dhcp_usage};${crit_dhcp_usage};0;100"
+			if [[ -n "${_dhcp_warn_abs}" || -n "${_dhcp_crit_abs}" ]]; then
+				# Absolute mode: thresholds apply to free count (inverted range: warn when free < N)
+				fg_perf+=" dhcp_${_sif_lbl}_free=${_free};${_dhcp_warn_abs:-}:;${_dhcp_crit_abs:-}:;0;${_pool_size}"
+				fg_perf+=" dhcp_${_sif_lbl}_leases=${_leases}"
+				fg_perf+=" dhcp_${_sif_lbl}_pct=${_usage_pct}%"
+			else
+				fg_perf+=" dhcp_${_sif_lbl}_leases=${_leases}"
+				fg_perf+=" dhcp_${_sif_lbl}_pct=${_usage_pct}%;${_dhcp_warn_pct:-};${_dhcp_crit_pct:-};0;100"
+			fi
 			[[ "${_sresv}" =~ ^[0-9]+$ && "${_sresv}" -gt 0 ]] && \
 				fg_perf+=" dhcp_${_sif_lbl}_reservations=${_sresv}"
 
