@@ -29,7 +29,7 @@
 #                    shaper source so configured shapers are always listed even without active
 #                    traffic; monitor endpoint overlaid for runtime stats when available
 # 2.3.0  2026-06-08  Fix shaper monitor extraction: data under .results.data[] (FortiOS 7.x);
-#                    fields: drops/dropped_bytes/current_bandwidth (bytes/sec → kbps auto-convert);
+#                    fields: drops/dropped_bytes/current_bandwidth (bytes/sec -> kbps auto-convert);
 #                    _shp_mon_get tries /select, scope=vdom, and base endpoint variants in order
 # 2.4.0  2026-06-08  --no-prefetch: serial API fetch mode for hardened systems; --tmp-dir <path>:
 #                    use alternative temp directory when /tmp is restricted
@@ -3106,7 +3106,7 @@ if [[ ( -n "${enable_dhcp}" || -n "${enable_all}" ) && -z "${disable_dhcp}" ]]; 
 		_dhcp_warn_count=0 ; _dhcp_crit_count=0
 		declare -a _dhcp_prob_lines
 
-		# Parse threshold mode: trailing % → percentage; plain number → free leases remaining
+		# Parse threshold mode: trailing % -> percentage; plain number -> free leases remaining
 		_dhcp_warn_pct="" ; _dhcp_warn_abs=""
 		_dhcp_crit_pct="" ; _dhcp_crit_abs=""
 		if [[ "${warn_dhcp_usage}" == *% ]]; then
@@ -4667,7 +4667,7 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 		while IFS=$'\t' read -r _apfw_name _apfw_os; do
 			[[ -z "${_apfw_os}" ]] && continue
 
-			# Parse os_version: "MODEL-vX.Y.Z-buildNNNN" → model, version, build
+			# Parse os_version: "MODEL-vX.Y.Z-buildNNNN" -> model, version, build
 			_apfw_model="${_apfw_os%%-v*}"
 			_apfw_raw="${_apfw_os#*-v}"
 			[[ "${_apfw_raw}" == "${_apfw_os}" ]] && { _apfw_model="" ; _apfw_raw="${_apfw_os#v}" ; }
@@ -5044,7 +5044,7 @@ if [[ ( -n "${enable_shaper}" || -n "${enable_all}" ) && -z "${disable_shaper}" 
 				[[ -z "${_mn}" ]] && continue
 				_shp_mdrop_pkts["${_mn}"]="${_mdrops:-0}"
 				_shp_mdrop_bytes["${_mn}"]="${_mdb:-0}"
-				# current_bandwidth is bytes/sec → convert to kbps
+				# current_bandwidth is bytes/sec -> convert to kbps
 				_shp_mbw_used["${_mn}"]=$(( ${_mcbw:-0} * 8 / 1000 ))
 			done < <(echo "${_shp_buf_mon}" | "${JQ}" --unbuffered -r '
 				(.results.data // .results)[]? | [
