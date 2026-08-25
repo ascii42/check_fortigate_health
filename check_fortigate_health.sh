@@ -51,12 +51,20 @@
 #                    fix invalid perfdata thresholds; N% = percentage of used leases;
 #                    plain number = free leases remaining (inverted: alert when free < N);
 #                    perfdata: free metric with Nagios range syntax (N:) in absolute mode
+# 2.10.0 2026-08-17  -eNI/-eNIS: rate/delta perfdata via state files (same metrics as
+#                    check_snmp_netint.pl): ni_<if>_in_bps, ni_<if>_out_bps (bits/sec),
+#                    ni_<if>_in_error, ni_<if>_out_error, ni_<if>_in_discard,
+#                    ni_<if>_out_discard (deltas per check interval); state files stored
+#                    in ${tmp_dir:-/tmp}/.fg_ni_<host>_<if>; counter wrap/reset guarded
+# 2.10.1 2026-08-25  Fix: rate/delta perfdata missing on SNMP path (_snmp_only=1);
+#                    added same state-file rate block to SNMP NI loop using _ni_rxb/
+#                    _ni_txb/_ni_ierr/_ni_oerr/_ni_idisc/_ni_odisc as current counters
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.9.0"
+REVISION="2.10.1"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -2202,6 +2210,9 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 		_ni_up=0
 		_ni_down=0
 		_ni_checked=0
+		_ni_now=$(date +%s)
+		_ni_host_safe=$(echo "${fg_host}" | tr '.:/' '___')
+		_ni_state_dir="${tmp_dir:-/tmp}"
 
 		for count in "${!_ni_names[@]}"; do
 			_nin="${_ni_names[count]}"
@@ -2266,6 +2277,38 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 				fg_perf+=" ni_${_ni_lbl}_errors=${_ni_total_err};${warn_ni_errors};${crit_ni_errors}"
 			[[ "${_ni_total_drop}" -gt 0 || "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
 				fg_perf+=" ni_${_ni_lbl}_drops=${_ni_total_drop};${warn_ni_drops};${crit_ni_drops}"
+
+			# Rate/delta metrics via state file (in_bps, out_bps, in/out error/discard)
+			_ni_state_f="${_ni_state_dir}/.fg_ni_${_ni_host_safe}_${_ni_lbl}"
+			_ni_in_bps=0; _ni_out_bps=0
+			_ni_d_rxerr=0; _ni_d_txerr=0; _ni_d_rxdisc=0; _ni_d_txdisc=0
+			if [[ -f "${_ni_state_f}" ]]; then
+				read -r _prev_ts _prev_rxb _prev_txb _prev_rxe _prev_txe _prev_rxd _prev_txd \
+					< "${_ni_state_f}" 2>/dev/null || true
+				_ni_elapsed=$(( _ni_now - ${_prev_ts:-0} ))
+				if [[ "${_ni_elapsed}" -gt 0 ]]; then
+					_cur_rxb="${_ni_rxbytes[count]:-0}"; _cur_txb="${_ni_txbytes[count]:-0}"
+					_cur_rxe="${_ni_rxerr[count]:-0}";   _cur_txe="${_ni_txerr[count]:-0}"
+					_cur_rxd="${_ni_rxdrops[count]:-0}"; _cur_txd="${_ni_txdrops[count]:-0}"
+					# Guard against counter wrap/reset
+					if (( _cur_rxb >= ${_prev_rxb:-0} && _cur_txb >= ${_prev_txb:-0} )) 2>/dev/null; then
+						_ni_in_bps=$(( (_cur_rxb - ${_prev_rxb:-0}) * 8 / _ni_elapsed ))
+						_ni_out_bps=$(( (_cur_txb - ${_prev_txb:-0}) * 8 / _ni_elapsed ))
+					fi
+					(( _cur_rxe >= ${_prev_rxe:-0} )) 2>/dev/null && _ni_d_rxerr=$(( _cur_rxe - ${_prev_rxe:-0} ))
+					(( _cur_txe >= ${_prev_txe:-0} )) 2>/dev/null && _ni_d_txerr=$(( _cur_txe - ${_prev_txe:-0} ))
+					(( _cur_rxd >= ${_prev_rxd:-0} )) 2>/dev/null && _ni_d_rxdisc=$(( _cur_rxd - ${_prev_rxd:-0} ))
+					(( _cur_txd >= ${_prev_txd:-0} )) 2>/dev/null && _ni_d_txdisc=$(( _cur_txd - ${_prev_txd:-0} ))
+				fi
+			fi
+			printf '%s\n' "${_ni_now} ${_ni_rxbytes[count]:-0} ${_ni_txbytes[count]:-0} ${_ni_rxerr[count]:-0} ${_ni_txerr[count]:-0} ${_ni_rxdrops[count]:-0} ${_ni_txdrops[count]:-0}" \
+				> "${_ni_state_f}" 2>/dev/null || true
+			fg_perf+=" ni_${_ni_lbl}_in_bps=${_ni_in_bps}bps"
+			fg_perf+=" ni_${_ni_lbl}_out_bps=${_ni_out_bps}bps"
+			fg_perf+=" ni_${_ni_lbl}_in_error=${_ni_d_rxerr}"
+			fg_perf+=" ni_${_ni_lbl}_out_error=${_ni_d_txerr}"
+			fg_perf+=" ni_${_ni_lbl}_in_discard=${_ni_d_rxdisc}"
+			fg_perf+=" ni_${_ni_lbl}_out_discard=${_ni_d_txdisc}"
 
 			if [[ -n "${_ni_expect_up[${_nin}]}" ]]; then
 				# Explicitly required UP
@@ -2360,6 +2403,9 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 			mapfile -t _ni_out_bytes < <(_snmp_walk "${OID_IF_OUT_OCTETS}"| tr -d ' ')
 		fi
 		_ni_total=0 ; _ni_up=0 ; _ni_down=0 ; _ni_checked=0
+		_ni_now=$(date +%s)
+		_ni_host_safe=$(echo "${fg_host}" | tr '.:/' '___')
+		_ni_state_dir="${tmp_dir:-/tmp}"
 		for (( _nii=0; _nii<${#_ni_names[@]}; _nii++ )); do
 			_iname="${_ni_names[_nii]}"
 			[[ -z "${_iname}" ]] && continue
@@ -2401,6 +2447,33 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 				fg_perf+=" ni_${_ni_lbl}_errors=${_ni_terr};${warn_ni_errors};${crit_ni_errors}"
 			[[ "${_ni_tdisc}" -gt 0 || "${warn_ni_drops}" -ge 0 ]] 2>/dev/null && \
 				fg_perf+=" ni_${_ni_lbl}_drops=${_ni_tdisc};${warn_ni_drops};${crit_ni_drops}"
+			# Rate/delta metrics via state file (in_bps, out_bps, in/out error/discard)
+			_ni_state_f="${_ni_state_dir}/.fg_ni_${_ni_host_safe}_${_ni_lbl}"
+			_ni_in_bps=0; _ni_out_bps=0
+			_ni_d_rxerr=0; _ni_d_txerr=0; _ni_d_rxdisc=0; _ni_d_txdisc=0
+			if [[ -f "${_ni_state_f}" ]]; then
+				read -r _prev_ts _prev_rxb _prev_txb _prev_rxe _prev_txe _prev_rxd _prev_txd \
+					< "${_ni_state_f}" 2>/dev/null || true
+				_ni_elapsed=$(( _ni_now - ${_prev_ts:-0} ))
+				if [[ "${_ni_elapsed}" -gt 0 ]]; then
+					if (( _ni_rxb >= ${_prev_rxb:-0} && _ni_txb >= ${_prev_txb:-0} )) 2>/dev/null; then
+						_ni_in_bps=$(( (_ni_rxb - ${_prev_rxb:-0}) * 8 / _ni_elapsed ))
+						_ni_out_bps=$(( (_ni_txb - ${_prev_txb:-0}) * 8 / _ni_elapsed ))
+					fi
+					(( _ni_ierr  >= ${_prev_rxe:-0} )) 2>/dev/null && _ni_d_rxerr=$(( _ni_ierr  - ${_prev_rxe:-0} ))
+					(( _ni_oerr  >= ${_prev_txe:-0} )) 2>/dev/null && _ni_d_txerr=$(( _ni_oerr  - ${_prev_txe:-0} ))
+					(( _ni_idisc >= ${_prev_rxd:-0} )) 2>/dev/null && _ni_d_rxdisc=$(( _ni_idisc - ${_prev_rxd:-0} ))
+					(( _ni_odisc >= ${_prev_txd:-0} )) 2>/dev/null && _ni_d_txdisc=$(( _ni_odisc - ${_prev_txd:-0} ))
+				fi
+			fi
+			printf '%s\n' "${_ni_now} ${_ni_rxb} ${_ni_txb} ${_ni_ierr} ${_ni_oerr} ${_ni_idisc} ${_ni_odisc}" \
+				> "${_ni_state_f}" 2>/dev/null || true
+			fg_perf+=" ni_${_ni_lbl}_in_bps=${_ni_in_bps}bps"
+			fg_perf+=" ni_${_ni_lbl}_out_bps=${_ni_out_bps}bps"
+			fg_perf+=" ni_${_ni_lbl}_in_error=${_ni_d_rxerr}"
+			fg_perf+=" ni_${_ni_lbl}_out_error=${_ni_d_txerr}"
+			fg_perf+=" ni_${_ni_lbl}_in_discard=${_ni_d_rxdisc}"
+			fg_perf+=" ni_${_ni_lbl}_out_discard=${_ni_d_txdisc}"
 			# Error threshold alerting
 			if [[ "${warn_ni_errors}" -ge 0 ]] 2>/dev/null && \
 			   [[ "${crit_ni_errors}" -ge 0 ]] 2>/dev/null && \
