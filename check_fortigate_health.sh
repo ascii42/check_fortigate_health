@@ -59,12 +59,21 @@
 # 2.10.1 2026-08-25  Fix: rate/delta perfdata missing on SNMP path (_snmp_only=1);
 #                    added same state-file rate block to SNMP NI loop using _ni_rxb/
 #                    _ni_txb/_ni_ierr/_ni_oerr/_ni_idisc/_ni_odisc as current counters
+# 2.10.2 2026-08-25  -eNI/-eNIS: show rate detail inline on interface output line:
+#                    (in=X.XMbps/out=X.XMbps/errors-in=N/errors-out=N/discard-in=N/
+#                    discard-out=N); shown for all up/down lines including verbose
+# 2.10.3 2026-08-25  Short SNMP flags: -u/--snmp-user, -l/--snmp-auth-proto,
+#                    -a/--snmp-auth-pass, -x/--snmp-priv-proto, -X/--snmp-priv-pass,
+#                    -L/--snmp-sec-level (mirrors snmpget convention; -a freed from
+#                    --api-token which retains -T); --max-parallel <N> (default 5)
+#                    caps concurrent prefetch jobs to prevent device webserver overload
+#                    under -A; same guard applied to shaper monitor background fetches
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.10.1"
+REVISION="2.10.3"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -215,17 +224,17 @@ Options:
  -SC, --snmp-community <community>
     SNMP v2c community string - enables SNMP-based resource/uptime collection
     (uses FORTINET-FORTIGATE-MIB OIDs; requires snmpget)
- --snmp-user <username>
+ -u, --snmp-user <username>
     SNMPv3 security name - enables SNMPv3 mode; cannot be combined with -SC
- --snmp-auth-proto <MD5|SHA>
+ -l, --snmp-auth-proto <MD5|SHA>
     SNMPv3 authentication protocol (default: SHA)
- --snmp-auth-pass <password>
+ -a, --snmp-auth-pass <password>
     SNMPv3 authentication password (implies authNoPriv or authPriv)
- --snmp-priv-proto <DES|AES>
+ -x, --snmp-priv-proto <DES|AES>
     SNMPv3 privacy protocol (default: AES)
- --snmp-priv-pass <password>
+ -X, --snmp-priv-pass <password>
     SNMPv3 privacy password (implies authPriv)
- --snmp-sec-level <noAuthNoPriv|authNoPriv|authPriv>
+ -L, --snmp-sec-level <noAuthNoPriv|authNoPriv|authPriv>
     SNMPv3 security level (auto-detected from credentials when omitted)
  --snmp-port <port>
     SNMP port (default: 161)
@@ -351,6 +360,7 @@ Options:
     NOTE: not included in -A; must be enabled explicitly
  -A,        --enable-all
     Enable all available checks (default when no -eX flags given)
+    NOTE: in some cases the Fortigate Webserver will crash! (DANGEROUS)
 
  Disable flags (opt-out - suppress individual modules from the default -A set):
  --disable-system        --disable-resources     --disable-ha    --disable-hasync
@@ -450,6 +460,9 @@ Options:
  --no-prefetch
     Disable parallel background API fetching; all calls run serially.
     Use on hardened systems where background subshells or /tmp writes are restricted.
+ --max-parallel <N>
+    Max concurrent background API requests (default: 5). Lower to 2-3 if the device
+    webserver becomes unresponsive under -A. Use --no-prefetch for fully serial mode.
  --tmp-dir <path>
     Use <path> instead of /tmp for temporary files (default: /tmp).
     Required when /tmp is noexec or not writable; directory must exist.
@@ -486,7 +499,7 @@ while [[ -n "${1}" ]]; do
 		shift
 		fg_host="${1}"
 		;;
-	-T|--token|-a|--api-token)
+	-T|--token|--api-token)
 		shift
 		api_token="${1}"
 		;;
@@ -494,27 +507,27 @@ while [[ -n "${1}" ]]; do
 		shift
 		snmp_community="${1}"
 		;;
-	--snmp-user)
+	-u|--snmp-user)
 		shift
 		snmp_user="${1}"
 		;;
-	--snmp-auth-proto)
+	-l|--snmp-auth-proto)
 		shift
 		snmp_auth_proto="${1}"
 		;;
-	--snmp-auth-pass)
+	-a|--snmp-auth-pass)
 		shift
 		snmp_auth_pass="${1}"
 		;;
-	--snmp-priv-proto)
+	-x|--snmp-priv-proto)
 		shift
 		snmp_priv_proto="${1}"
 		;;
-	--snmp-priv-pass)
+	-X|--snmp-priv-pass)
 		shift
 		snmp_priv_pass="${1}"
 		;;
-	--snmp-sec-level)
+	-L|--snmp-sec-level)
 		shift
 		snmp_sec_level="${1}"
 		;;
@@ -1053,6 +1066,10 @@ while [[ -n "${1}" ]]; do
 	--no-prefetch)
 		no_prefetch=1
 		;;
+	--max-parallel)
+		shift
+		max_parallel="${1}"
+		;;
 	--tmp-dir)
 		shift
 		tmp_dir="${1}"
@@ -1424,11 +1441,15 @@ else
 		|| exit_unknown "Failed to create temp dir under /tmp (try --tmp-dir)"
 fi
 
-# In serial mode (_pf_get runs synchronously); parallel mode fires background jobs.
+# In serial mode (_pf_get runs synchronously); parallel mode fires background jobs
+# limited to max_parallel (default 5) concurrent requests to avoid overwhelming the device.
 _pf_get() {
 	if [[ -n "${no_prefetch}" ]]; then
 		fg_api_get "$1" > "${_pf}/$2" 2>/dev/null
 	else
+		while (( $(jobs -rp | wc -l) >= ${max_parallel:-5} )); do
+			wait -n 2>/dev/null || sleep 0.1
+		done
 		fg_api_get "$1" > "${_pf}/$2" 2>/dev/null &
 	fi
 }
@@ -1515,6 +1536,9 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 				_shp_mon_get "${_pf}/shaper_mon_${_shp_pf_v}.json" \
 					"${FG_API}/monitor/firewall/shaper" "${_shp_pf_v}"
 			else
+				while (( $(jobs -rp | wc -l) >= ${max_parallel:-5} )); do
+					wait -n 2>/dev/null || sleep 0.1
+				done
 				_shp_mon_get "${_pf}/shaper_mon_${_shp_pf_v}.json" \
 					"${FG_API}/monitor/firewall/shaper" "${_shp_pf_v}" &
 			fi
@@ -2309,6 +2333,7 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 			fg_perf+=" ni_${_ni_lbl}_out_error=${_ni_d_txerr}"
 			fg_perf+=" ni_${_ni_lbl}_in_discard=${_ni_d_rxdisc}"
 			fg_perf+=" ni_${_ni_lbl}_out_discard=${_ni_d_txdisc}"
+			_ni_detail+=" (in=$(( _ni_in_bps/1000000 )).$(( (_ni_in_bps%1000000)/100000 ))Mbps/out=$(( _ni_out_bps/1000000 )).$(( (_ni_out_bps%1000000)/100000 ))Mbps/errors-in=${_ni_d_rxerr}/errors-out=${_ni_d_txerr}/discard-in=${_ni_d_rxdisc}/discard-out=${_ni_d_txdisc})"
 
 			if [[ -n "${_ni_expect_up[${_nin}]}" ]]; then
 				# Explicitly required UP
@@ -2474,6 +2499,7 @@ if [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "$
 			fg_perf+=" ni_${_ni_lbl}_out_error=${_ni_d_txerr}"
 			fg_perf+=" ni_${_ni_lbl}_in_discard=${_ni_d_rxdisc}"
 			fg_perf+=" ni_${_ni_lbl}_out_discard=${_ni_d_txdisc}"
+			_speed_s+=" (in=$(( _ni_in_bps/1000000 )).$(( (_ni_in_bps%1000000)/100000 ))Mbps/out=$(( _ni_out_bps/1000000 )).$(( (_ni_out_bps%1000000)/100000 ))Mbps/errors-in=${_ni_d_rxerr}/errors-out=${_ni_d_txerr}/discard-in=${_ni_d_rxdisc}/discard-out=${_ni_d_txdisc})"
 			# Error threshold alerting
 			if [[ "${warn_ni_errors}" -ge 0 ]] 2>/dev/null && \
 			   [[ "${crit_ni_errors}" -ge 0 ]] 2>/dev/null && \
