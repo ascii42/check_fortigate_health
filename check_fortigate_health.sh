@@ -69,12 +69,14 @@
 #                    caps concurrent prefetch jobs to prevent device webserver overload
 #                    under -A; same guard applied to shaper monitor background fetches
 # 2.10.4 2026-10-01  Fix ntp wrong offet 
+# 2.10.5 2026-10-01  added --blacklist-ap for Blacklist Access Points
+#                    added --whitelist-ap for Whitelist Access Pointsd 
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.10.4"
+REVISION="2.10.5"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -443,6 +445,10 @@ Options:
     Comma-separated list of LB virtual server names to skip entirely (e.g. vip1,vip2)
  --blacklist-lb-rs <list>
     Comma-separated list of real server IPs or IP:port to skip (e.g. 10.0.0.1,10.0.0.2:8080)
+ --blacklist-ap <list>
+    Comma-separated list of AP names to skip entirely (as shown in FortiGate GUI)
+ --whitelist-ap <list>
+    Comma-separated list of AP names to include; if set, only listed APs are checked
  --blacklist-certs <list>, --blacklist-cert <list>
     Comma-separated list of certificate names to skip
  --ignore-license <list>
@@ -1035,6 +1041,14 @@ while [[ -n "${1}" ]]; do
 	--blacklist-lb-rs)
 		shift
 		lb_blacklist_rs="${1}"
+		;;
+	--blacklist-ap)
+		shift
+		ap_blacklist="${1}"
+		;;
+	--whitelist-ap)
+		shift
+		ap_whitelist="${1}"
 		;;
 	--blacklist-certs|--blacklist-cert)
 		shift
@@ -2964,10 +2978,21 @@ if [[ ( -n "${enable_ap}" || -n "${enable_all}" ) && -z "${disable_ap}" ]]; then
 	if [[ -n "${_ap_buf}" && "${_ap_buf}" =~ '"results"' ]]; then
 		_ap_total=0 ; _ap_up=0 ; _ap_down=0 ; _ap_clients_total=0
 		declare -a _ap_dn_lines
+		declare -A _ap_bl_map _ap_wl_map
+		if [[ -n "${ap_blacklist}" ]]; then
+			IFS=',' read -ra _a <<< "${ap_blacklist}"
+			for _e in "${_a[@]}"; do _ap_bl_map["${_e}"]=1; done
+		fi
+		if [[ -n "${ap_whitelist}" ]]; then
+			IFS=',' read -ra _a <<< "${ap_whitelist}"
+			for _e in "${_a[@]}"; do _ap_wl_map["${_e}"]=1; done
+		fi
 
 		# Pass 1: per-AP summary
 		while IFS=$'\t' read -r _ap_name _ap_serial _ap_status _ap_clients _ap_fw \
 		                         _ap_mesh _ap_temp _ap_failure _ap_join; do
+			[[ -n "${_ap_bl_map[${_ap_name}]}" ]] && continue
+			[[ -n "${ap_whitelist}" && -z "${_ap_wl_map[${_ap_name}]}" ]] && continue
 			(( _ap_total++ ))
 			_ap_lbl="${_ap_name//[^a-zA-Z0-9]/_}"
 			[[ "${_ap_clients}" =~ ^[0-9]+$ ]] && (( _ap_clients_total += _ap_clients ))
@@ -2996,6 +3021,8 @@ if [[ ( -n "${enable_ap}" || -n "${enable_all}" ) && -z "${disable_ap}" ]]; then
 		while IFS=$'\t' read -r _rap_name _r_id _r_type _r_clients _r_chan _r_txpwr \
 		                         _r_util _r_bw_rx _r_bw_tx _r_bytes_rx _r_bytes_tx \
 		                         _r_retries _r_noise; do
+			[[ -n "${_ap_bl_map[${_rap_name}]}" ]] && continue
+			[[ -n "${ap_whitelist}" && -z "${_ap_wl_map[${_rap_name}]}" ]] && continue
 			_rap_lbl="${_rap_name//[^a-zA-Z0-9]/_}"
 			_r_lbl="${_rap_lbl}_radio${_r_id}"
 			_r_type_s="${_r_type#802.11}"
@@ -3033,7 +3060,7 @@ if [[ ( -n "${enable_ap}" || -n "${enable_all}" ) && -z "${disable_ap}" ]]; then
 			fg_output+="${_ap_sev} - ${_ap_line}\n"
 			[[ "${_ap_sev}" != "${status_ok}" ]] && fg_problem_output+="${_ap_sev} - ${_ap_line}\n"
 		done
-		unset _ap_dn_lines
+		unset _ap_dn_lines _ap_bl_map _ap_wl_map
 
 		# Total client count threshold
 		_ap_cl_sev="${status_ok}"
