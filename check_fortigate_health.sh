@@ -68,12 +68,13 @@
 #                    --api-token which retains -T); --max-parallel <N> (default 5)
 #                    caps concurrent prefetch jobs to prevent device webserver overload
 #                    under -A; same guard applied to shaper monitor background fetches
+# 2.10.4 2026-10-01  Fix ntp wrong offet 
 
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.10.3"
+REVISION="2.10.4"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -2805,7 +2806,7 @@ if [[ ( -n "${enable_ntp}" || -n "${enable_all}" ) && -z "${disable_ntp}" ]]; th
 			(( _ntp_total++ ))
 			if [[ "${_nr}" == "true" ]]; then
 				(( _ntp_reachable++ ))
-				_noff_ms=$(echo "${_noff}" | "${AWK}" '{printf "%d", $1*1000}')
+				_noff_ms=$(echo "${_noff}" | "${AWK}" '{printf "%d", $1*1}')
 				[[ "${_noff_ms}" -lt 0 ]] 2>/dev/null && _noff_ms=$(( -_noff_ms ))
 				if [[ -z "${_ntp_best_server}" || "${_noff_ms}" -lt "${_ntp_max_offset_ms}" ]]; then
 					_ntp_best_server="${_ns}" ; _ntp_best_offset_ms="${_noff_ms}" ; _ntp_best_strat="${_nstrat}"
