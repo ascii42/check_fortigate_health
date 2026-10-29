@@ -68,10 +68,16 @@
 #                    --api-token which retains -T); --max-parallel <N> (default 5)
 #                    caps concurrent prefetch jobs to prevent device webserver overload
 #                    under -A; same guard applied to shaper monitor background fetches
-# 2.10.4 2026-10-01  Fix ntp wrong offet 
+# 2.10.4 2026-10-01  Fix ntp wrong offset
 # 2.10.5 2026-10-01  added --blacklist-ap for Blacklist Access Points
-#                    added --whitelist-ap for Whitelist Access Pointsd 
-
+#                    added --whitelist-ap for Whitelist Access Points
+#        2026-10-26  added --https-port, --https-verify, --https-ca-bundle
+#        2026-10-29  added support for using FortiManager to proxy API access
+#                    to remote FG firewalls.  Added flags --fmg-device and
+#                    --print-fmg-device-paths.  When either is specified, the target
+#                    hostname/IP and user/pass/token arguments are repurposed for
+#                    FortiManager's API.  Both username/password and token auth
+#                    are supported
 
 ## VARIABLES
 PROGNAME="${0##*/}"
@@ -191,6 +197,47 @@ _servers_subset() {
 }
 
 
+print_fmg_device_paths() {
+    # 1. Prep the payload
+    # 2. Conditional on API token or API session being used, extend the payload (for session if needed), and execute curl
+    # 2. Extract the device data array using jq
+    # 3. Use conditional string manipulation inside jq to print deterministic paths to the user
+    # sanity check
+    if [[ -z "${api_token}" && -z "${api_session}" ]]; then
+        exit_unknown "FortiManager API access is required but a valid token was not provided and no session could be created from username/password"
+    fi
+    fmg_payload='{
+            "method": "get",
+            "id": 1,
+            "params": [
+                {
+                    "url": "/dvmdb/device",
+                    "option": ["extra info"]
+                }
+            ]
+        } '
+
+    if [[ -n "${api_token}" ]]; then
+    ${CURL} ${CURL_OPTS} -X POST "${FMG_API}" \
+        -H "Authorization: Bearer ${api_token}" \
+        -H "Content-Type: application/json" \
+        -d "${fmg_payload}" | ${JQ} -r '
+        ( .result[]?.data[]? // .result.data[]? | select(.name != null) ) |
+        ( select(."extra info".adom != null and ."extra info".adom != "root") | "adom/" + ."extra info".adom + "/device/" + .name ),
+        ( select(."extra info".adom == null or ."extra info".adom == "root") | "device/" + .name )
+        '
+    else
+        fmg_payload=$(${JQ} -n --arg session "${api_session}" --argjson fmg_payload "${fmg_payload}" '$fmg_payload + {"session": $session}')
+        ${CURL} ${CURL_OPTS} -X POST "${FMG_API}" \
+         -H "Content-Type: application/json" \
+         -d "${fmg_payload}" | ${JQ} -r '
+        ( .result[]?.data[]? // .result.data[]? | select(.name != null) ) |
+        ( select(."extra info".adom != null and ."extra info".adom != "root") | "adom/" + ."extra info".adom + "/device/" + .name ),
+        ( select(."extra info".adom == null or ."extra info".adom == "root") | "device/" + .name )
+        '
+    fi
+}
+
 ## FUNCTIONS
 print_usage() {
 	echo "Usage: ${PROGNAME} [-h] [-V] -H <host> -T <api_token> [-opts] [-w <warn>] [-c <crit>]"
@@ -210,8 +257,9 @@ cat << EOM
  This plugin monitors Fortinet FortiGate firewalls via the REST API v2
  (https://<host>/api/v2/).
 
- Connects directly to the firewall - no FortiManager required.
- Uses HTTPS with --insecure to accept self-signed certificates.
+ Connects directly to the firewall or optionally via FortiManager.
+ Uses HTTPS, accepts self-signed/invalid certificates by default (curl 
+ --insecure).  Customize behavior with --https-* options.
  Authentication via API token (preferred) or username/password.
 
 Options:
@@ -219,6 +267,8 @@ Options:
     Print detailed help screen
  -V, --version
     Print version information
+ --print-fmg-device-paths
+    Print the available fmg device paths and exit.  Requires -H and --token to specify FortiManager host and authentication.
 
  -H, --host <hostname|IP>
     Hostname or IP address of the FortiGate
@@ -230,6 +280,8 @@ Options:
     Require validation of the HTTPS server certificate
  --https-ca-bundle <port>
     CA bundle file to validate device API server certificate instead of system default.  Implies --https-verify.
+ --fmg-device  <fortimanager device>
+    Use this FortiManager device path to proxy API access through FortiManager.  Requires -T, or -U+-P.  The -H hostname and authentication details will be used to instead access the FortiManager API
  -SC, --snmp-community <community>
     SNMP v2c community string - enables SNMP-based resource/uptime collection
     (uses FORTINET-FORTIGATE-MIB OIDs; requires snmpget)
@@ -490,6 +542,7 @@ Example: ${PROGNAME} -H 10.0.0.1 -T MyApiToken123 -A -w 80 -c 90
          ${PROGNAME} -H 10.0.0.1 -T MyApiToken123 -eNI --ifup port1,port2 --ifdown port5,port6
          ${PROGNAME} -H 10.0.0.1 -T MyApiToken123 -eSys -eRes -eAl
          ${PROGNAME} -H 10.0.0.1 -T MyApiToken123 -eNIS --ifup wan1
+         ${PROGNAME} -H 10.0.0.2 --fmg-device adom/FGT76/my-firewall-name -T MyApiToken123 -eNIS --ifup wan1
 
 
 EOM
@@ -508,6 +561,10 @@ while [[ -n "${1}" ]]; do
 		print_revision "${PROGNAME}" "${REVISION}"
 		exit 0
 		;;
+   --print-fmg-device-paths)
+        print_fmg_device_paths=1
+        fmg_api_required=1
+        ;;
 	-H|--host)
 		shift
 		fg_host="${1}"
@@ -558,6 +615,11 @@ while [[ -n "${1}" ]]; do
 	--https-ca-bundle)
 		shift
 		https_ca_bundle="${1}"
+		;;
+	--fmg-device)
+		shift
+		fmg_device="${1}"
+        fmg_api_required=1
 		;;
 	-U|--username)
 		shift
@@ -1129,6 +1191,7 @@ done
 [[ -z "${fg_host}" ]] && exit_unknown "FortiGate hostname or IP (-H) is required!"
 [[ -z "${api_token}" && ( -z "${api_user}" || -z "${api_pass}" ) && -z "${snmp_community}" && -z "${snmp_user}" ]] && \
 	exit_unknown "Authentication required: -T <api_token>  OR  -U <user> -P <pass>  OR  --snmp-community / --snmp-user (SNMP-only mode)"
+[[ -n "${print_fmg_device_paths}" && ( ! ( -n "${api_token}" || ( -n "${api_user}" || -n "${api_pass}" ) ) || -z "${fg_host}}" ) ]] && exit_unknown "FortiManager hostname/IP (-H) is required along with API token (-T) or username/password (-P/-U) to retrieve and print available FortiGate device paths"
 
 # If no explicit enable flags -> enable all (opt-out mode via --disable-X)
 [[
@@ -1336,9 +1399,16 @@ if [[ -n "${https_ca_bundle}" ]]; then
     https_verify=1
 fi
 
-CURL_OPTS="--silent --max-time 15"
+CURL_OPTS="--max-time 15"
 if [[ -z "${https_verify}" ]]; then
-    CURL_OPTS="--insecure $CURL_OPTS"
+    CURL_OPTS="--insecure ${CURL_OPTS}"
+fi
+
+# enable curl verbosity in debug mode
+if [[ -n "${debug}" ]]; then
+    CURL_OPTS="-v ${CURL_OPTS}"
+else
+    CURL_OPTS="--silent ${CURL_OPTS}"
 fi
 
 fg_output=""
@@ -1356,14 +1426,74 @@ fi
 if [[ -n "${https_port}" ]]; then
     HTTPS_PORT_STR=":${https_port}"
 fi
-FG_API="https://${fg_host}${HTTPS_PORT_STR}/api/v2"
+FG_API_URI_BASE="/api/v2"
+FG_API="https://${fg_host}${HTTPS_PORT_STR}${FG_API_URI_BASE}"
+FMG_API="https://${fg_host}${HTTPS_PORT_STR}/jsonrpc"
+
 
 # ---------------------------------------------------------------------------
 # Authentication - API token, username/password, or SNMP-only (no REST API)
+# If fmg_device is specified, then  fg_host is actually FortiManager being used
+# as a proxy to access fmg_device.  The token (or user/pass) and FMG_API are instead used
+# for FortiManager
 # ---------------------------------------------------------------------------
-if [[ -n "${api_token}" ]]; then
+if [[ -n "${fmg_api_required}"  && -n "${api_user}" && -n "${api_pass}" ]]; then
+    # If FMG API is required and user/pass creds were provided, retrieve a session token; stored globally
+    fmg_login_payload=$(${JQ} -n \
+        --arg user "${api_user}" \
+        --arg password "${api_pass}" \
+        '{method: "exec",
+        params: [
+            {
+                url: "/sys/login/user",
+                data: {
+                    user: $user,
+                    password: $password
+                }
+            }
+            ]
+            }
+        ')
+    api_session=$(${CURL} ${CURL_OPTS} -X POST -H "Content-Type: application/json" -d "${fmg_login_payload}" ${FMG_API} | ${JQ} '.session' )
+fi
+
+# Conditionally define fg_api_get() based on authentication and FortiManager use
+if [[ -n "${fmg_api_required}" ]]; then
+    # FortiManager; requires bearer token or session token (from user/password auth) to be available
+    # sanity check
+    if [[ -z "${api_token}" && -z "${api_session}" ]]; then
+        exit_unknown "FortiManager API access is required but a valid token was not provided and no session could be created from username/password"
+    fi
+    fg_api_get() {
+        fmg_payload=$(${JQ} -n \
+          --arg target "${fmg_device}" \
+        --arg resource "${FG_API_URI_BASE}$@" \
+        '{method: "exec",
+        params: [
+            {
+                url: "/sys/proxy/json",
+                data: {
+                    action: "get",
+                    resource: $resource,
+                    target: [$target]
+                }
+            }
+            ]
+            }')
+        # the ultimate target firewall's payload is wrapped in the fgm result=>data=> response data structure
+        if [[ -n "${api_token}" ]]; then
+            # bearer token
+            ${CURL} ${CURL_OPTS} -X POST -H "Content-Type: application/json" -d "${fmg_payload}" -H "Authorization: Bearer ${api_token}" "${FMG_API}" | ${JQ} '.result[0].data[0].response'
+        else
+            # session token; requires extending the JSON payload
+            fmg_payload=$(${JQ} -n --arg session "${api_session}" --argjson fmg_payload "${fmg_payload}" '$fmg_payload + {("session"): $session}')
+            ${CURL} ${CURL_OPTS} -X POST -H "Content-Type: application/json" -d "${fmg_payload}" "${FMG_API}" | ${JQ} '.result[0].data[0].response'
+        fi
+    }
+elif [[ -n "${api_token}" ]]; then
+    # Token auth to FortiGate directly
 	fg_api_get() {
-		${CURL} ${CURL_OPTS} -X GET -H "Authorization: Bearer ${api_token}" "$@"
+		${CURL} ${CURL_OPTS} -X GET -H "Authorization: Bearer ${api_token}" "${FG_API}$@"
 	}
 elif [[ -z "${api_user}" && ( -n "${snmp_community}" || -n "${snmp_user}" ) ]]; then
 	# SNMP-only mode: no REST API credentials - stub out API calls
@@ -1374,6 +1504,7 @@ elif [[ -z "${api_user}" && ( -n "${snmp_community}" || -n "${snmp_user}" ) ]]; 
 	_snmp_only=1
 	fg_api_get() { :; }
 else
+    # User/password auth to firewall, authenticate to retrieve token
 	_cookie_jar=$(mktemp /tmp/.fg_cookie_XXXXXX)
 	_login_hdr=$(mktemp /tmp/.fg_header_XXXXXX)
 
@@ -1408,7 +1539,7 @@ else
 		${CURL} ${CURL_OPTS} -X GET \
 			-b "${_cookie_jar}" \
 			-H "X-CSRFTOKEN: ${_csrf_token}" \
-			"$@"
+			"${FG_API}$@"
 	}
 
 	_fg_cleanup() {
@@ -1420,6 +1551,16 @@ else
 	}
 	trap '_fg_cleanup' EXIT
 fi
+
+# ---------------------------------------------------------------------------
+# If --print-fmg-device-paths was requested execute here and exit
+# ---------------------------------------------------------------------------
+if [[ -n "${print_fmg_device_paths}" ]]; then
+    print_fmg_device_paths
+    exit 0
+fi
+
+
 
 # ---------------------------------------------------------------------------
 # Fetch system status (shared by all checks - provides hostname/model label)
@@ -1450,7 +1591,7 @@ if [[ -n "${_snmp_only}" ]]; then
 	fg_ha_role="standalone"
 	_sys_buffer=""
 else
-	_sys_buffer=$(fg_api_get "${FG_API}/monitor/system/status")
+	_sys_buffer=$(fg_api_get "/monitor/system/status")
 
 	if [[ -z "${_sys_buffer}" || ! "${_sys_buffer}" =~ '"results"' ]]; then
 		echo "${status_unkn} - Failed to retrieve system status from ${fg_host} - check host and credentials"
@@ -1518,79 +1659,79 @@ _shp_mon_get() {
 }
 
 # Always needed: HA CMDB (fg_ha_mode for System+HA checks) and global thresholds
-_pf_get "${FG_API}/cmdb/system/ha"       ha_cmdb.json
-_pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
+_pf_get "/cmdb/system/ha"       ha_cmdb.json
+_pf_get "/cmdb/system/global"   cmdb_global.json
 
 [[ ( -n "${enable_res}" || -n "${enable_all}" ) && -z "${disable_res}" && -z "${_snmp_avail}" ]] && {
-	_pf_get "${FG_API}/monitor/system/resource/usage?interval=1min&time_period=60" res_usage.json
-	_pf_get "${FG_API}/monitor/system/resource/usage"                              res_usage_plain.json
+	_pf_get "/monitor/system/resource/usage?interval=1min&time_period=60" res_usage.json
+	_pf_get "/monitor/system/resource/usage"                              res_usage_plain.json
 }
 [[ ( -n "${enable_ha}"      || -n "${enable_all}" ) && -z "${disable_ha}"      ]] && {
-	_pf_get "${FG_API}/monitor/system/ha-statistics"                                    ha_stats.json
+	_pf_get "/monitor/system/ha-statistics"                                    ha_stats.json
 	[[ -z "${disable_hasync}" ]] && \
-		_pf_get "${FG_API}/monitor/system/ha-checksums"                                 ha_checksums.json
+		_pf_get "/monitor/system/ha-checksums"                                 ha_checksums.json
 }
 [[ ( -n "${enable_ni}" || -n "${enable_nis}" || -n "${enable_all}" ) && -z "${disable_ni}" ]] && \
-	_pf_get "${FG_API}/monitor/system/interface?include_aggregate=true&scope=global"    ni.json
+	_pf_get "/monitor/system/interface?include_aggregate=true&scope=global"    ni.json
 [[ ( -n "${enable_vpn}"     || -n "${enable_all}" ) && -z "${disable_vpn}"     ]] && \
-	_pf_get "${FG_API}/monitor/vpn/ipsec?scope=global&start=0&count=1000"               vpn.json
+	_pf_get "/monitor/vpn/ipsec?scope=global&start=0&count=1000"               vpn.json
 [[ ( -n "${enable_ssl}"     || -n "${enable_all}" ) && -z "${disable_ssl}"     ]] && \
-	_pf_get "${FG_API}/monitor/vpn/ssl?scope=global"                                    ssl.json
+	_pf_get "/monitor/vpn/ssl?scope=global"                                    ssl.json
 [[ ( -n "${enable_sd}"      || -n "${enable_all}" ) && -z "${disable_sd}"      ]] && {
-	_pf_get "${FG_API}/monitor/system/storage"                                          storage.json
-	_pf_get "${FG_API}/monitor/log/current-disk-usage"                                  logdisk.json
+	_pf_get "/monitor/system/storage"                                          storage.json
+	_pf_get "/monitor/log/current-disk-usage"                                  logdisk.json
 }
 [[ ( -n "${enable_lic}"     || -n "${enable_all}" ) && -z "${disable_lic}"     ]] && \
-	_pf_get "${FG_API}/monitor/license/status"                                          license.json
+	_pf_get "/monitor/license/status"                                          license.json
 [[ ( -n "${enable_cloud}"   || -n "${enable_all}" ) && -z "${disable_cloud}"   ]] && {
-	_pf_get "${FG_API}/monitor/license/status"                                          cloud_lic.json
-	_pf_get "${FG_API}/monitor/log/forticloud"                                          cloud_log.json
+	_pf_get "/monitor/license/status"                                          cloud_lic.json
+	_pf_get "/monitor/log/forticloud"                                          cloud_log.json
 }
 [[ ( -n "${enable_cert}"    || -n "${enable_all}" ) && -z "${disable_cert}"    ]] && \
-	_pf_get "${FG_API}/monitor/system/available-certificates"                           certs.json
+	_pf_get "/monitor/system/available-certificates"                           certs.json
 [[ ( -n "${enable_alerts}"  || -n "${enable_all}" ) && -z "${disable_alerts}"  ]] && {
-	_al_url="${FG_API}/log/disk/event/list?rows=${alert_rows}&start=0&logtype=system"
+	_al_url="/log/disk/event/list?rows=${alert_rows}&start=0&logtype=system"
 	[[ -n "${alerts_vdom}" ]] && _al_url+="&vdom=${alerts_vdom}"
 	_pf_get "${_al_url}" alerts.json
 }
 [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmware}" ]] && {
-	_pf_get "${FG_API}/monitor/system/firmware"                                         firmware.json
+	_pf_get "/monitor/system/firmware"                                         firmware.json
 	# Component firmware: fetch AP/SW/FEX data when not already fetched by their own checks
 	[[ -z "${disable_ap}" ]] && \
-		_pf_get "${FG_API}/monitor/wifi/firmware"                                       wifi_firmware.json
+		_pf_get "/monitor/wifi/firmware"                                       wifi_firmware.json
 	[[ -z "${disable_ap}" && -z "${enable_ap}" && -z "${enable_all}" ]] && \
-		_pf_get "${FG_API}/monitor/wifi/managed_ap"                                     managed_ap.json
+		_pf_get "/monitor/wifi/managed_ap"                                     managed_ap.json
 	[[ -z "${disable_sw}" && -z "${enable_sw}" && -z "${enable_all}" ]] && \
-		_pf_get "${FG_API}/monitor/switch-controller/managed-switch"                    managed_sw.json
+		_pf_get "/monitor/switch-controller/managed-switch"                    managed_sw.json
 	[[ -z "${disable_fex}" && -z "${enable_fex}" && -z "${enable_all}" ]] && \
-		_pf_get "${FG_API}/monitor/extension-controller/fortiextender"                  fex.json
+		_pf_get "/monitor/extension-controller/fortiextender"                  fex.json
 }
 [[ ( -n "${enable_sensors}" || -n "${enable_all}" ) && -z "${disable_sensors}" ]] && \
-	_pf_get "${FG_API}/monitor/system/sensor-info"                                      sensors.json
+	_pf_get "/monitor/system/sensor-info"                                      sensors.json
 [[ ( -n "${enable_fwstats}" || -n "${enable_all}" ) && -z "${disable_fwstats}" ]] && {
-	_pf_get "${FG_API}/monitor/firewall/policy/select"                                  fwpolicy4.json
-	_pf_get "${FG_API}/monitor/firewall/policy6/select"                                 fwpolicy6.json
+	_pf_get "/monitor/firewall/policy/select"                                  fwpolicy4.json
+	_pf_get "/monitor/firewall/policy6/select"                                 fwpolicy6.json
 }
 [[ ( -n "${enable_shaper}" || -n "${enable_all}" ) && -z "${disable_shaper}" ]] && {
 	if [[ -n "${shaper_vdom}" ]]; then
 		IFS=',' read -ra _shp_pf_vdoms <<< "${shaper_vdom}"
 		for _shp_pf_v in "${_shp_pf_vdoms[@]}"; do
 			_shp_pf_v="${_shp_pf_v// /}"
-			_pf_get "${FG_API}/cmdb/firewall.shaper/traffic-shaper?vdom=${_shp_pf_v}" "shaper_cmdb_${_shp_pf_v}.json"
+			_pf_get "/cmdb/firewall.shaper/traffic-shaper?vdom=${_shp_pf_v}" "shaper_cmdb_${_shp_pf_v}.json"
 			if [[ -n "${no_prefetch}" ]]; then
 				_shp_mon_get "${_pf}/shaper_mon_${_shp_pf_v}.json" \
-					"${FG_API}/monitor/firewall/shaper" "${_shp_pf_v}"
+					"/monitor/firewall/shaper" "${_shp_pf_v}"
 			else
 				while (( $(jobs -rp | wc -l) >= ${max_parallel:-5} )); do
 					wait -n 2>/dev/null || sleep 0.1
 				done
 				_shp_mon_get "${_pf}/shaper_mon_${_shp_pf_v}.json" \
-					"${FG_API}/monitor/firewall/shaper" "${_shp_pf_v}" &
+					"/monitor/firewall/shaper" "${_shp_pf_v}" &
 			fi
 		done
 	else
 		# Auto mode: prefetch VDOM list; per-VDOM CMDB+monitor queries done at check time
-		_pf_get "${FG_API}/cmdb/system/vdom?start=0&count=100"                          vdom_list.json
+		_pf_get "/cmdb/system/vdom?start=0&count=100"                          vdom_list.json
 	fi
 }
 [[ ( -n "${enable_lb}" || -n "${enable_all}" ) && -z "${disable_lb}" ]] && {
@@ -1598,48 +1739,48 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 		IFS=',' read -ra _lb_pf_vdoms <<< "${lb_vdom}"
 		for _lb_pf_v in "${_lb_pf_vdoms[@]}"; do
 			_lb_pf_v="${_lb_pf_v// /}"
-			_pf_get "${FG_API}/monitor/firewall/load-balance?count=500&vdom=${_lb_pf_v}" "lb_mon_${_lb_pf_v}.json"
+			_pf_get "/monitor/firewall/load-balance?count=500&vdom=${_lb_pf_v}" "lb_mon_${_lb_pf_v}.json"
 		done
 	else
-		_pf_get "${FG_API}/monitor/firewall/load-balance?count=500" lb_mon_root.json
+		_pf_get "/monitor/firewall/load-balance?count=500" lb_mon_root.json
 	fi
 }
 [[ ( -n "${enable_ntp}"   || -n "${enable_all}" ) && -z "${disable_ntp}"   ]] && \
-	_pf_get "${FG_API}/monitor/system/ntp/status"                                       ntp_status.json
+	_pf_get "/monitor/system/ntp/status"                                       ntp_status.json
 [[ ( -n "${enable_sdwan}" || -n "${enable_all}" ) && -z "${disable_sdwan}" ]] && {
 	if [[ -n "${sdwan_vdom}" ]]; then
-		_pf_get "${FG_API}/monitor/virtual-wan/health-check?scope=vdom&vdom=${sdwan_vdom}"  sdwan_hc.json
-		_pf_get "${FG_API}/cmdb/system/sdwan?vdom=${sdwan_vdom}"                            sdwan_config.json
+		_pf_get "/monitor/virtual-wan/health-check?scope=vdom&vdom=${sdwan_vdom}"  sdwan_hc.json
+		_pf_get "/cmdb/system/sdwan?vdom=${sdwan_vdom}"                            sdwan_config.json
 	else
-		_pf_get "${FG_API}/monitor/virtual-wan/health-check"                                sdwan_hc.json
-		_pf_get "${FG_API}/cmdb/system/sdwan"                                               sdwan_config.json
+		_pf_get "/monitor/virtual-wan/health-check"                                sdwan_hc.json
+		_pf_get "/cmdb/system/sdwan"                                               sdwan_config.json
 	fi
 }
 [[ ( -n "${enable_vdom}"  || -n "${enable_all}" ) && -z "${disable_vdom}"  ]] && {
-	_pf_get "${FG_API}/cmdb/system/vdom?start=0&count=100"                              vdom_list.json
-	_pf_get "${FG_API}/monitor/license/status"                                          vdom_lic_info.json
+	_pf_get "/cmdb/system/vdom?start=0&count=100"                              vdom_list.json
+	_pf_get "/monitor/license/status"                                          vdom_lic_info.json
 }
 [[ ( -n "${enable_ftk}"   || -n "${enable_all}" ) && -z "${disable_ftk}"   ]] && \
-	_pf_get "${FG_API}/monitor/user/fortitoken"                                         fortitoken.json
+	_pf_get "/monitor/user/fortitoken"                                         fortitoken.json
 [[ ( -n "${enable_ap}"    || -n "${enable_all}" ) && -z "${disable_ap}"    ]] && \
-	_pf_get "${FG_API}/monitor/wifi/managed_ap"                                         managed_ap.json
+	_pf_get "/monitor/wifi/managed_ap"                                         managed_ap.json
 [[ ( -n "${enable_sw}"    || -n "${enable_all}" ) && -z "${disable_sw}"    ]] && \
-	_pf_get "${FG_API}/monitor/switch-controller/managed-switch"                        managed_sw.json
+	_pf_get "/monitor/switch-controller/managed-switch"                        managed_sw.json
 [[ ( -n "${enable_fex}"   || -n "${enable_all}" ) && -z "${disable_fex}"   ]] && \
-	_pf_get "${FG_API}/monitor/extension-controller/fortiextender"                      fex.json
+	_pf_get "/monitor/extension-controller/fortiextender"                      fex.json
 [[ ( -n "${enable_dhcp}"  || -n "${enable_all}" ) && -z "${disable_dhcp}"  ]] && {
-	_pf_get "${FG_API}/cmdb/system.dhcp/server"                                         dhcp_config.json
-	_pf_get "${FG_API}/monitor/system/dhcp"                                             dhcp_leases.json
+	_pf_get "/cmdb/system.dhcp/server"                                         dhcp_config.json
+	_pf_get "/monitor/system/dhcp"                                             dhcp_leases.json
 }
 [[ ( -n "${enable_ipam}"  || -n "${enable_all}" ) && -z "${disable_ipam}"  ]] && {
-	_pf_get "${FG_API}/monitor/system/ipam/status"                                      ipam_status.json
-	_pf_get "${FG_API}/cmdb/system/ipam"                                                ipam_config.json
+	_pf_get "/monitor/system/ipam/status"                                      ipam_status.json
+	_pf_get "/cmdb/system/ipam"                                                ipam_config.json
 }
 [[ ( -n "${enable_utm}"       || -n "${enable_all}" ) && -z "${disable_utm}"       ]] && \
-	_pf_get "${FG_API}/monitor/ips/anomaly"                                             dos_rules.json
+	_pf_get "/monitor/ips/anomaly"                                             dos_rules.json
 [[ -n "${enable_secrating}" && -z "${disable_secrating}" ]] && {
-	_pf_get "${FG_API}/monitor/system/security-rating/summary"                          secrating_summary.json
-	_pf_get "${FG_API}/monitor/system/security-rating/result"                           secrating_result.json
+	_pf_get "/monitor/system/security-rating/summary"                          secrating_summary.json
+	_pf_get "/monitor/system/security-rating/result"                           secrating_result.json
 }
 [[ -n "${enable_logwatch}" && -z "${disable_logwatch}" ]] && {
 	if [[ -z "${logwatch_type}" ]]; then
@@ -1654,7 +1795,7 @@ _pf_get "${FG_API}/cmdb/system/global"   cmdb_global.json
 	for _lw_pf_t in "${_lw_pf_types[@]}"; do
 		_lw_pf_t="${_lw_pf_t// /}"
 		[[ -z "${_lw_pf_t}" ]] && continue
-		_lw_pf_url="${FG_API}/log/${logwatch_device}/${_lw_pf_t}/list?rows=${logwatch_rows}&start=0"
+		_lw_pf_url="/log/${logwatch_device}/${_lw_pf_t}/list?rows=${logwatch_rows}&start=0"
 		if [[ -n "${logwatch_subtype}" && ("${_lw_pf_t}" == "event" || "${_lw_pf_t}" == "traffic") ]]; then
 			_lw_pf_url+="&logtype=${logwatch_subtype}"
 		fi
@@ -1729,7 +1870,7 @@ if [[ ( -n "${enable_sys}" || -n "${enable_all}" ) && -z "${disable_sys}" ]]; th
 		fg_output+="${status_ok} - ${_fwh}Serial: ${fg_serial} | HA mode: ${fg_ha_mode}\n"
 
 		# DNS servers from CMDB
-		_dns_buf=$(fg_api_get "${FG_API}/cmdb/system/dns")
+		_dns_buf=$(fg_api_get "/cmdb/system/dns")
 		_dns_servers=$(echo "${_dns_buf}" | "${JQ}" --unbuffered -r '
 			[.results.primary, .results.secondary] |
 			map(select(. != null and . != "0.0.0.0" and . != "")) | join(" / ")' 2>/dev/null)
@@ -1737,7 +1878,7 @@ if [[ ( -n "${enable_sys}" || -n "${enable_all}" ) && -z "${disable_sys}" ]]; th
 			fg_output+="${status_ok} - ${_fwh}DNS servers: ${_dns_servers}\n"
 
 		# NTP servers from CMDB (ha_cmdb_buf already fetched; fetch ntp separately)
-		_ntp_buf=$(fg_api_get "${FG_API}/cmdb/system/ntp")
+		_ntp_buf=$(fg_api_get "/cmdb/system/ntp")
 		_ntp_sync=$(echo "${_ntp_buf}" | "${JQ}" --unbuffered -r '.results.ntpsync // ""' 2>/dev/null)
 		if [[ "${_ntp_sync}" == "enable" ]]; then
 			_ntp_servers=$(echo "${_ntp_buf}" | "${JQ}" --unbuffered -r \
@@ -1981,7 +2122,7 @@ if [[ ( -n "${enable_res}" || -n "${enable_all}" ) && -z "${disable_res}" ]]; th
 		fi
 
 		# Detailed session stats from firewall session endpoint
-		_sess_buf=$(fg_api_get "${FG_API}/monitor/firewall/session/full-stat")
+		_sess_buf=$(fg_api_get "/monitor/firewall/session/full-stat")
 		if [[ -n "${_sess_buf}" && "${_sess_buf}" =~ '"results"' ]]; then
 			_sess_max=$(echo "${_sess_buf}" | "${JQ}" --unbuffered -r \
 				'.results.session_limit // .results.max_session // ""' 2>/dev/null)
@@ -2916,9 +3057,9 @@ if [[ ( -n "${enable_sdwan}" || -n "${enable_all}" ) && -z "${disable_sdwan}" ]]
 		if [[ ("${_sdwan_probes_pre}" == "0" || ! "${_sdwan_probes_pre}" =~ ^[0-9]+$) && "${_sdwan_status_pre}" == "disable" ]]; then
 			while IFS= read -r _vd_name; do
 				[[ -z "${_vd_name}" || "${_vd_name}" == "root" ]] && continue
-				_vd_sdwan_cfg=$(fg_api_get "${FG_API}/cmdb/system/sdwan?vdom=${_vd_name}" 2>/dev/null)
+				_vd_sdwan_cfg=$(fg_api_get "/cmdb/system/sdwan?vdom=${_vd_name}" 2>/dev/null)
 				if [[ "$(echo "${_vd_sdwan_cfg}" | "${JQ}" --unbuffered -r '.results.status // "disable"' 2>/dev/null)" == "enable" ]]; then
-					_sdwan_buf=$(fg_api_get "${FG_API}/monitor/virtual-wan/health-check?scope=vdom&vdom=${_vd_name}" 2>/dev/null)
+					_sdwan_buf=$(fg_api_get "/monitor/virtual-wan/health-check?scope=vdom&vdom=${_vd_name}" 2>/dev/null)
 					_sdwan_cfg="${_vd_sdwan_cfg}"
 					sdwan_vdom="${_vd_name}"
 					break
@@ -3718,7 +3859,7 @@ if [[ ( -n "${enable_vdom}" || -n "${enable_all}" ) && -z "${disable_vdom}" ]]; 
 
 		while IFS= read -r _vd_name; do
 			[[ -z "${_vd_name}" ]] && continue
-			_vd_res_buf=$(fg_api_get "${FG_API}/monitor/system/vdom-resource?vdom=${_vd_name}" 2>/dev/null)
+			_vd_res_buf=$(fg_api_get "/monitor/system/vdom-resource?vdom=${_vd_name}" 2>/dev/null)
 			[[ -z "${_vd_res_buf}" || ! "${_vd_res_buf}" =~ '"results"' ]] && continue
 
 			_vd_cpu=$(echo "${_vd_res_buf}"    | "${JQ}" --unbuffered -r '.results.cpu // 0' 2>/dev/null)
@@ -5160,20 +5301,20 @@ if [[ ( -n "${enable_shaper}" || -n "${enable_all}" ) && -z "${disable_shaper}" 
 		if [[ "${#_shp_auto_vdoms[@]}" -gt 0 ]]; then
 			for _sv in "${_shp_auto_vdoms[@]}"; do
 				[[ -z "${_sv}" ]] && continue
-				fg_api_get "${FG_API}/cmdb/firewall.shaper/traffic-shaper?vdom=${_sv}" \
+				fg_api_get "/cmdb/firewall.shaper/traffic-shaper?vdom=${_sv}" \
 					> "${_pf}/shaper_cmdb_${_sv}.json" 2>/dev/null
 				_shp_mon_get "${_pf}/shaper_mon_${_sv}.json" \
-					"${FG_API}/monitor/firewall/shaper" "${_sv}"
+					"/monitor/firewall/shaper" "${_sv}"
 				_shp_files_cmdb+=("${_pf}/shaper_cmdb_${_sv}.json")
 				_shp_files_mon+=("${_pf}/shaper_mon_${_sv}.json")
 				_shp_vpfx+=("${_sv}/")
 			done
 		else
 			# Non-VDOM device: query root without scope
-			fg_api_get "${FG_API}/cmdb/firewall.shaper/traffic-shaper" \
+			fg_api_get "/cmdb/firewall.shaper/traffic-shaper" \
 				> "${_pf}/shaper_cmdb_root.json" 2>/dev/null
 			_shp_mon_get "${_pf}/shaper_mon_root.json" \
-				"${FG_API}/monitor/firewall/shaper"
+				"/monitor/firewall/shaper"
 			_shp_files_cmdb+=("${_pf}/shaper_cmdb_root.json")
 			_shp_files_mon+=("${_pf}/shaper_mon_root.json")
 			_shp_vpfx+=("")
