@@ -479,6 +479,8 @@ Options:
  --tmp-dir <path>
     Use <path> instead of /tmp for temporary files (default: /tmp).
     Required when /tmp is noexec or not writable; directory must exist.
+ --tmp-no-rm
+    Do not delete temporary files upon exit; useful for debugging. 
  -s,  --silent
     Show only problem lines (suppress OK detail)
  -v,  --verbose
@@ -1106,6 +1108,9 @@ while [[ -n "${1}" ]]; do
 		shift
 		tmp_dir="${1}"
 		;;
+    --tmp-no-rm)
+        tmp_no_rm=1
+        ;;
 	-s|--silent)
 		silent=1
 		;;
@@ -1399,7 +1404,9 @@ else
 	rm -f "${_login_hdr}"
 
 	if [[ -z "${_csrf_token}" ]]; then
-		rm -f "${_cookie_jar}"
+        if [[ -z "${tmp_no_rm}" ]]; then
+            rm -f "${_cookie_jar}"
+        fi
 		echo "${status_unkn} - Login to ${fg_host} failed - no CSRF token in response (check credentials and that REST API access is permitted)"
 		exit 4
 	fi
@@ -1416,7 +1423,9 @@ else
 			-b "${_cookie_jar}" \
 			-H "X-CSRFTOKEN: ${_csrf_token}" \
 			"https://${fg_host}/logout" >/dev/null 2>&1 || true
-		rm -f "${_cookie_jar}"
+        if [[ -z "${tmp_no_rm}" ]]; then
+    		rm -f "${_cookie_jar}"
+        fi        
 	}
 	trap '_fg_cleanup' EXIT
 fi
@@ -5845,5 +5854,6 @@ else
 	echo -e "${_po}${_perf_sep}"
 fi
 exitstate=${state}
-rm -rf "${_pf}" 2>/dev/null
-exit ${exitstate}
+if [[ -z "${tmp_no_rm}" ]]; then
+    rm -rf "${_pf}" 2>/dev/null
+fiexit ${exitstate}

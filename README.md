@@ -269,6 +269,7 @@ Without `--logwatch-eventids` or `--logwatch-actions`, severity is derived from 
 | `--perfdata` | Explicitly request perfdata output (default when not suppressed) |
 | `--no-prefetch` | Disable parallel background API fetching; all calls run serially. Use on hardened systems where background subshells or `/tmp` writes are restricted. |
 | `--tmp-dir <path>` | Use `<path>` instead of `/tmp` for temp files. Required when `/tmp` is `noexec` or not writable; directory must already exist. |
+| `--tmp-no-rm` | Do not delete temporary files upon exit; useful for debugging. |
 | `-s, --silent` | Show only problem lines (suppress OK detail) |
 | `-v, --verbose` | Print section headers and full per-item detail |
 | `--append-fw-name` | Prefix every output line with the device hostname (default: hostname suppressed) |
