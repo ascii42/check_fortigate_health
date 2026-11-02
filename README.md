@@ -5,7 +5,7 @@
 [![Monitoring](https://img.shields.io/badge/Monitoring-Icinga%2FNagios-blue.svg)](https://icinga.com/)
 [![Version](https://img.shields.io/badge/version-2.10.5-orange.svg)](CHANGELOG.md)
 
-A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, compatible with Icinga and Nagios monitoring systems. This plugin monitors system health, resources, VPN, SD-WAN, security services, licenses, certificates, and more — directly via the FortiGate REST API v2 and/or SNMP. No FortiManager required.
+A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, compatible with Icinga and Nagios monitoring systems. This plugin monitors system health, resources, VPN, SD-WAN, security services, licenses, certificates, and more — directly via the FortiGate REST API v2 and/or SNMP. No FortiManager required, however FortiManager is supported to simplify/centralize API data collection from firewalls.
 
 ## Features
 
@@ -15,6 +15,7 @@ A comprehensive Bash-based monitoring plugin for Fortinet FortiGate firewalls, c
 - **SNMP Fallbacks**: HA mode/sync, license info, firmware version, uptime, interface counters — all available via SNMP when REST is unavailable
 - **Opt-in or Opt-out**: Use `-eX` flags to run only specific checks, or `--disable-X` to suppress individual modules from the full set
 - **Granular Thresholds**: Per-metric warning/critical thresholds for CPU, memory, disk, latency, packet loss, certificate expiry, license expiry, signature age, uptime, IPS/AV detections, and more
+- **FortiManager Support**: FortiManager API proxy can be used to collect data from firewalls, simplifying firewall and authentication management (no per-firewall unique API tokens or credentials)
 - **SD-WAN Auto-Detection**: Automatically finds the SD-WAN VDOM when it is not in the root VDOM
 - **Log Event Monitoring**: Configurable logwatch check that scans recent log entries across multiple log types in parallel
 - **Blacklisting & Selection**: Skip specific interfaces, VPN tunnels, certificates, DHCP pools, or license features
@@ -274,6 +275,22 @@ Without `--logwatch-eventids` or `--logwatch-actions`, severity is derived from 
 | `--append-fw-name` | Prefix every output line with the device hostname (default: hostname suppressed) |
 | `-d, --debug` | Enable bash trace output (`set -x`) |
 
+### FortiManager Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--fmg-device` | - | Use FortiManager to proxy commands to the specified device path, such as `adom/myadom/device/mydevice`.  Hostname, Username, Passsword, Token, and HTTPS-related arguments will all be used to configure the FortiManager API access instead of the FortiGate API access |
+| `--print-fmg-device-paths` | - | Query the FortiManager API for adom/device paths that are available to use for `--fmg-device` specification.  This is printed and exits. This relies on the appropriate credential and HTTPS arguments to be passed for API access |
+
+## FortiManager Support/Behavior
+The script supports using FortiManager to proxy API commands to firewalls.  This is beneficial because it eliminates the need to manage per-firewall API tokens and accounts.  When `--fmg-device` is provided, the hostname and token on the command line are now assumed to be FortiManager's hostname and API token.  The `--fmg-device` value would specify the FortiManager-managed firewall to now query by proxy
+
+The target firewall specified by `--fmg-device` is of the format `adom/ADOM/device/DEVICE_NAME`.  A list of available device paths can be printed by running the script with `--print-fmg-device-paths`.  
+
+FortiManager is used as a proxy for API access, using the `/jsonrpc` JSON RPC endpoint offered by FortiManager, specifically the RPC path `/sys/json/proxy`.  A FortiManager REST Admin account can be used for token authentication, or a normal administrator account with username/password authentication.  In either case, the account must be configured with "JSON API Access" set to a value other than `None`.  `Read` is the suggested value, along with an admin profile that restricts the account to the privileges appropriate for your use case.
+
+Thresholds, outputs and other behavior is identical regardless of whether the firewall API is accessed directly or via FortiManager.
+
 ## Examples
 
 ### Full Health Check
@@ -366,6 +383,17 @@ Alert if the firewall has been up for less than 30 minutes:
 ```bash
 ./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -A \
   --disable-sensors --disable-fwstats --no-perfdata
+```
+
+### Full Check, Suppress Noisy Modules (via FortiManager and HTTPS customization)
+```bash
+./check_fortigate_health.sh -H 10.0.0.1 -T MyApiToken123 -A \
+  --disable-sensors --disable-fwstats --no-perfdata --fmg-device=adom/PROD76/device/HQ-FW01 --https-verify --https-port 4443 --https-ca-bundle /etc/certs/ca.bundle
+```
+
+### Query FortiManager Available Devices (with HTTPS cusomization)
+```bash
+./check_fortigate_health.sh  --https-verify --https-port 4443 --https-ca-bundle /etc/certs/ca.bundle   -H 10.0.0.1  -U "monitoring.ro" -P 'secret.password'   --print-fmg-device-paths 
 ```
 
 ### SNMP-Only Mode (No REST API)
