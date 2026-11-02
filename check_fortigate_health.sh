@@ -268,7 +268,7 @@ Options:
  -V, --version
     Print version information
  --print-fmg-device-paths
-    Print the available fmg device paths and exit.  Requires -H and --token to specify FortiManager host and authentication.
+    Print the available fmg device paths and exit.  Requires -H and -T or -U/-P to specify FortiManager host and authentication.
 
  -H, --host <hostname|IP>
     Hostname or IP address of the FortiGate
@@ -281,7 +281,7 @@ Options:
  --https-ca-bundle <port>
     CA bundle file to validate device API server certificate instead of system default.  Implies --https-verify.
  --fmg-device  <fortimanager device>
-    Use this FortiManager device path to proxy API access through FortiManager.  Requires -T, or -U+-P.  The -H hostname and authentication details will be used to instead access the FortiManager API
+    Use this FortiManager device path to proxy API access through FortiManager.  Requires -T, or -U/-P.  The -H hostname and authentication details will be used to instead access the FortiManager API
  -SC, --snmp-community <community>
     SNMP v2c community string - enables SNMP-based resource/uptime collection
     (uses FORTINET-FORTIGATE-MIB OIDs; requires snmpget)
