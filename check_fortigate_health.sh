@@ -78,11 +78,22 @@
 #                    hostname/IP and user/pass/token arguments are repurposed for
 #                    FortiManager's API.  Both username/password and token auth
 #                    are supported
+# 2.10.6 2026-11-08  Fix -eUTM without -eLic falling back to "SNMP-only mode" message:
+#                    license.json prefetch now also triggered when enable_utm is set
+#                    so -eUTM alone correctly fetches /monitor/license/status without
+#                    printing license output; updated -eUTM help text to document the
+#                    implicit license data fetch; clarified UTM fallback message
+# 2.10.7 2026-11-08  Fix -eSW for FortiOS 7.2+: managed-switch endpoint changed from
+#                    /monitor/switch-controller/managed-switch to
+#                    /monitor/switch-controller/managed-switch/status; endpoint now
+#                    selected at runtime based on fg_version; status comparison made
+#                    case-insensitive to handle "Connected"/"Authorized" (7.2+) vs
+#                    "connected"/"authorized" (<=7.0)
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.10.5"
+REVISION="2.10.7"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -355,6 +366,9 @@ Options:
     IPS/AV/AppCtrl: signature db version, age, engine version, license status;
     DoS protection: total rules, blocking/log-only breakdown;
     IPS/AV detection statistics (cumulative since boot, per VDOM summed);  (SNMP only)
+    NOTE: implicitly fetches /monitor/license/status (same data as -eLic) as a prerequisite
+    for signature version and status checks, but does not output license results unless
+    -eLic is also given.
     thresholds: --warn/crit-utm-update (days, applies to all services with a known db date)
     --warn-ips N / --crit-ips N       WARN/CRIT when total IPS detections exceed N (default: -1=off)
     --warn-ips-high N / --crit-ips-high N  WARN/CRIT when crit+high severity IPS detections exceed N
@@ -1622,6 +1636,16 @@ else
 	fg_ha_role=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r \
 		'.results.ha_info.role // ""' 2>/dev/null)
 fi
+# Managed-switch endpoint changed in FortiOS 7.2 (/managed-switch -> /managed-switch/status)
+_sw_endpoint="/monitor/switch-controller/managed-switch"
+if [[ "${fg_version}" =~ ^v?([0-9]+)\.([0-9]+) ]]; then
+	_fg_vmaj="${BASH_REMATCH[1]}"
+	_fg_vmin="${BASH_REMATCH[2]}"
+	if (( _fg_vmaj > 7 || (_fg_vmaj == 7 && _fg_vmin >= 2) )); then
+		_sw_endpoint="/monitor/switch-controller/managed-switch/status"
+	fi
+	unset _fg_vmaj _fg_vmin
+fi
 # ---------------------------------------------------------------------------
 # Parallel API prefetch - fire all needed endpoints in background, wait once.
 # Avoids serial TLS handshakes; cuts runtime from ~N×RTT to ~1×RTT.
@@ -1690,8 +1714,11 @@ _pf_get "/cmdb/system/global"   cmdb_global.json
 	_pf_get "/monitor/system/storage"                                          storage.json
 	_pf_get "/monitor/log/current-disk-usage"                                  logdisk.json
 }
-[[ ( -n "${enable_lic}"     || -n "${enable_all}" ) && -z "${disable_lic}"     ]] && \
-	_pf_get "/monitor/license/status"                                          license.json
+_need_license_data=""
+[[ ( -n "${enable_lic}" || -n "${enable_all}" ) && -z "${disable_lic}" ]] && _need_license_data=1
+[[ ( -n "${enable_utm}" || -n "${enable_all}" ) && -z "${disable_utm}" ]] && _need_license_data=1
+[[ -n "${_need_license_data}" ]] && _pf_get "/monitor/license/status" license.json
+unset _need_license_data
 [[ ( -n "${enable_cloud}"   || -n "${enable_all}" ) && -z "${disable_cloud}"   ]] && {
 	_pf_get "/monitor/license/status"                                          cloud_lic.json
 	_pf_get "/monitor/log/forticloud"                                          cloud_log.json
@@ -1711,7 +1738,7 @@ _pf_get "/cmdb/system/global"   cmdb_global.json
 	[[ -z "${disable_ap}" && -z "${enable_ap}" && -z "${enable_all}" ]] && \
 		_pf_get "/monitor/wifi/managed_ap"                                     managed_ap.json
 	[[ -z "${disable_sw}" && -z "${enable_sw}" && -z "${enable_all}" ]] && \
-		_pf_get "/monitor/switch-controller/managed-switch"                    managed_sw.json
+		_pf_get "${_sw_endpoint}"                                              managed_sw.json
 	[[ -z "${disable_fex}" && -z "${enable_fex}" && -z "${enable_all}" ]] && \
 		_pf_get "/monitor/extension-controller/fortiextender"                  fex.json
 }
@@ -1774,7 +1801,7 @@ _pf_get "/cmdb/system/global"   cmdb_global.json
 [[ ( -n "${enable_ap}"    || -n "${enable_all}" ) && -z "${disable_ap}"    ]] && \
 	_pf_get "/monitor/wifi/managed_ap"                                         managed_ap.json
 [[ ( -n "${enable_sw}"    || -n "${enable_all}" ) && -z "${disable_sw}"    ]] && \
-	_pf_get "/monitor/switch-controller/managed-switch"                        managed_sw.json
+	_pf_get "${_sw_endpoint}"                                                  managed_sw.json
 [[ ( -n "${enable_fex}"   || -n "${enable_all}" ) && -z "${disable_fex}"   ]] && \
 	_pf_get "/monitor/extension-controller/fortiextender"                      fex.json
 [[ ( -n "${enable_dhcp}"  || -n "${enable_all}" ) && -z "${disable_dhcp}"  ]] && {
@@ -3283,11 +3310,11 @@ if [[ ( -n "${enable_sw}" || -n "${enable_all}" ) && -z "${disable_sw}" ]]; then
 		declare -a _sw_dn_lines
 		while IFS=$'\t' read -r _sw_name _sw_serial _sw_status _sw_fw; do
 			(( _sw_total++ ))
-			if [[ "${_sw_status}" == "connected" || "${_sw_status}" == "authorized" ]]; then
+			if [[ "${_sw_status,,}" == "connected" || "${_sw_status,,}" == "authorized" ]]; then
 				(( _sw_up++ ))
 				if [[ -n "${verbose}" ]]; then
 					_sw_fw_s="" ; [[ -n "${_sw_fw}" && "${_sw_fw}" != "null" && "${_sw_fw}" != "" ]] && _sw_fw_s=" | fw: ${_sw_fw}"
-					fg_output+="${status_ok} - Switch ${_fwn}${_sw_name}: ${_sw_status}${_sw_fw_s}\n"
+					fg_output+="${status_ok} - Switch ${_fwn}${_sw_name}: ${_sw_status,,}${_sw_fw_s}\n"
 				fi
 			else
 				(( _sw_down++ ))
@@ -3738,7 +3765,7 @@ if [[ ( -n "${enable_utm}" || -n "${enable_all}" ) && -z "${disable_utm}" ]]; th
 		done
 		unset _utm_prob_lines
 	else
-		fg_output+="${status_ok} - UTM${_fws}not available in SNMP-only mode\n"
+		fg_output+="${status_ok} - UTM${_fws}not available (license data not retrieved; running in SNMP-only mode?)\n"
 	fi
 
 	# IPS + AV detection statistics — SNMP only (no REST equivalent in FortiOS)
@@ -5997,4 +6024,5 @@ fi
 exitstate=${state}
 if [[ -z "${tmp_no_rm}" ]]; then
     rm -rf "${_pf}" 2>/dev/null
-fiexit ${exitstate}
+fi
+exit ${exitstate}
