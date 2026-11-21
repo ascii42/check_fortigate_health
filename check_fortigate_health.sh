@@ -89,11 +89,12 @@
 #                    selected at runtime based on fg_version; status comparison made
 #                    case-insensitive to handle "Connected"/"Authorized" (7.2+) vs
 #                    "connected"/"authorized" (<=7.0)
+# 2.10.8 2026-11-21  Fix -eSW ifs
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.10.7"
+REVISION="2.10.8"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
@@ -3308,7 +3309,7 @@ if [[ ( -n "${enable_sw}" || -n "${enable_all}" ) && -z "${disable_sw}" ]]; then
 	if [[ -n "${_sw_buf}" && "${_sw_buf}" =~ '"results"' ]]; then
 		_sw_total=0 ; _sw_up=0 ; _sw_down=0
 		declare -a _sw_dn_lines
-		while IFS=$'\t' read -r _sw_name _sw_serial _sw_status _sw_fw; do
+		while IFS=$'\x01' read -r _sw_name _sw_serial _sw_status _sw_fw; do
 			(( _sw_total++ ))
 			if [[ "${_sw_status,,}" == "connected" || "${_sw_status,,}" == "authorized" ]]; then
 				(( _sw_up++ ))
@@ -3322,7 +3323,7 @@ if [[ ( -n "${enable_sw}" || -n "${enable_all}" ) && -z "${disable_sw}" ]]; then
 			fi
 		done < <(echo "${_sw_buf}" | "${JQ}" --unbuffered -r \
 			'.results[] | [(.name // .switch_id), (.serial // "unknown"), (.status // "unknown"),
-			 (.os_version // .firmware_version // .version // "")] | join("\t")' 2>/dev/null)
+			 (.os_version // .firmware_version // .version // "")] | join("")' 2>/dev/null)
 
 		_sw_sev="${status_ok}"
 		if (( crit_sw_down >= 0 && _sw_down >= crit_sw_down )) 2>/dev/null && [[ "${_sw_down}" -gt 0 ]]; then
@@ -5077,7 +5078,7 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 	if [[ -n "${verbose}" ]]; then
 		_sw_fw_buf=$(cat "${_pf}/managed_sw.json" 2>/dev/null)
 		if [[ -n "${_sw_fw_buf}" && "${_sw_fw_buf}" =~ '"results"' ]]; then
-			while IFS=$'\t' read -r _swfw_name _swfw_serial _swfw_ver; do
+			while IFS=$'\x01' read -r _swfw_name _swfw_serial _swfw_ver; do
 				_swfw_ver_s="unknown"
 				[[ -n "${_swfw_ver}" && "${_swfw_ver}" != "null" && "${_swfw_ver}" != "" ]] && \
 					_swfw_ver_s="${_swfw_ver}"
@@ -5085,7 +5086,7 @@ if [[ ( -n "${enable_firmware}" || -n "${enable_all}" ) && -z "${disable_firmwar
 			done < <(echo "${_sw_fw_buf}" | "${JQ}" --unbuffered -r '
 				.results[] |
 				[(.name // .switch_id), (.serial // "unknown"),
-				 (.os_version // .firmware_version // .version // "")] | join("\t")' 2>/dev/null)
+				 (.os_version // .firmware_version // .version // "")] | join("")' 2>/dev/null)
 		fi
 	fi
 
