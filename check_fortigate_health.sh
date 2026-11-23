@@ -1801,6 +1801,8 @@ unset _need_license_data
 	_pf_get "/monitor/user/fortitoken"                                         fortitoken.json
 [[ ( -n "${enable_ap}"    || -n "${enable_all}" ) && -z "${disable_ap}"    ]] && \
 	_pf_get "/monitor/wifi/managed_ap"                                         managed_ap.json
+    # Add parallel prefetch for active WiFi clients (per-SSID breakdown)
+    _pf_get "/monitor/wifi/client"                                       ap_clients.json
 [[ ( -n "${enable_sw}"    || -n "${enable_all}" ) && -z "${disable_sw}"    ]] && \
 	_pf_get "${_sw_endpoint}"                                                  managed_sw.json
 [[ ( -n "${enable_fex}"   || -n "${enable_all}" ) && -z "${disable_fex}"   ]] && \
@@ -3290,6 +3292,24 @@ if [[ ( -n "${enable_ap}" || -n "${enable_all}" ) && -z "${disable_ap}" ]]; then
 	else
 		fg_output+="${status_ok} - FortiAP${_fws}not available in SNMP-only mode\n"
 	fi
+    # Retrieve prefetched WiFi client JSON, add ssid_* keys to perfdata
+    _wifi_clients=$(cat "${_pf}/ap_clients.json" 2>/dev/null)  # Replace with the exact lookup used for managed_ap
+
+    if [[ -n "$_wifi_clients" ]]; then
+        ssid_counts=$(echo "$_wifi_clients" | jq -r '
+            [.results // [] | .[] | select(.ssid != null and .ssid != "") | .ssid]
+            | group_by(.)
+            | map({ssid: .[0], count: length})
+            | .[]
+            | "\(.ssid)=\(.count)"
+        ' 2>/dev/null)
+
+        while IFS='=' read -r ssid_name client_count; do
+            [[ -z "$ssid_name" ]] && continue
+            safe_ssid=$(echo "$ssid_name" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+            fg_perf+=" 'ssid_${safe_ssid}_clients'=${client_count};;;0;"
+        done <<< "$ssid_counts"
+    fi
 
 	if [[ -n "${verbose}" ]]; then
 		fg_output+="---------------------------------------\n\n"
