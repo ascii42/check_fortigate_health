@@ -90,11 +90,12 @@
 #                    case-insensitive to handle "Connected"/"Authorized" (7.2+) vs
 #                    "connected"/"authorized" (<=7.0)
 # 2.10.8 2026-11-21  Fix -eSW ifs
+# 2.10.9 2026-11-24  Added per-SSID Client count in perfdata
 
 ## VARIABLES
 PROGNAME="${0##*/}"
 PROGPATH="${0%/*}"
-REVISION="2.10.8"
+REVISION="2.10.9"
 JQ="$(which jq)"
 CURL="$(which curl)"
 AWK="$(which awk)"
