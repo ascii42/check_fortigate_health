@@ -91,6 +91,7 @@
 #                    "connected"/"authorized" (<=7.0)
 # 2.10.8 2026-11-21  Fix -eSW ifs
 # 2.10.9 2026-11-24  Added per-SSID Client count in perfdata
+# 2.10.10 2026-11-25 Fix exit codes
 
 ## VARIABLES
 PROGNAME="${0##*/}"
@@ -192,7 +193,7 @@ OID_IPS_DROPS=".1.3.6.1.4.1.12356.101.9.3.1.1.8"      # fgIpsStatsDrops
 exit_unknown() {
 	echo "Unknown parameter: ${1}"
 	print_usage
-	exit 4
+	exit 3
 }
 
 # Return 0 if every comma-separated token in $1 appears in $2 (also comma-separated)
@@ -1206,9 +1207,9 @@ while [[ -n "${1}" ]]; do
 done
 
 # Check mandatory parameters and dependencies
-[[ -z "${JQ}" ]]   && { echo "${PROGNAME}: jq is required - please install it";   exit 4; }
-[[ -z "${CURL}" ]] && { echo "${PROGNAME}: curl is required - please install it"; exit 4; }
-[[ -z "${AWK}" ]]  && { echo "${PROGNAME}: awk is required - please install it";  exit 4; }
+[[ -z "${JQ}" ]]   && { echo "${PROGNAME}: jq is required - please install it";   exit 3; }
+[[ -z "${CURL}" ]] && { echo "${PROGNAME}: curl is required - please install it"; exit 3; }
+[[ -z "${AWK}" ]]  && { echo "${PROGNAME}: awk is required - please install it";  exit 3; }
 [[ -z "${fg_host}" ]] && exit_unknown "FortiGate hostname or IP (-H) is required!"
 [[ -z "${api_token}" && ( -z "${api_user}" || -z "${api_pass}" ) && -z "${snmp_community}" && -z "${snmp_user}" ]] && \
 	exit_unknown "Authentication required: -T <api_token>  OR  -U <user> -P <pass>  OR  --snmp-community / --snmp-user (SNMP-only mode)"
@@ -1344,11 +1345,11 @@ done
 if [[ -n "${snmp_user}" ]]; then
 	if [[ -n "${snmp_auth_pass}" && ${#snmp_auth_pass} -lt 8 ]]; then
 		echo "[UNKNOWN] - SNMPv3 auth passphrase too short (${#snmp_auth_pass} chars) - USM requires minimum 8 characters"
-		exit 4
+		exit 3
 	fi
 	if [[ -n "${snmp_priv_pass}" && ${#snmp_priv_pass} -lt 8 ]]; then
 		echo "[UNKNOWN] - SNMPv3 priv passphrase too short (${#snmp_priv_pass} chars) - USM requires minimum 8 characters"
-		exit 4
+		exit 3
 	fi
 fi
 
@@ -1520,7 +1521,7 @@ elif [[ -z "${api_user}" && ( -n "${snmp_community}" || -n "${snmp_user}" ) ]]; 
 	# SNMP-only mode: no REST API credentials - stub out API calls
 	if [[ -z "${SNMPGET}" ]]; then
 		echo "${status_unkn} - snmpget is required for SNMP mode - please install net-snmp-utils (net-snmp)"
-		exit 4
+		exit 3
 	fi
 	_snmp_only=1
 	fg_api_get() { :; }
@@ -1555,7 +1556,7 @@ else
             rm -f "${_cookie_jar}"
         fi
 		echo "${status_unkn} - Login to ${fg_host} failed - no CSRF token in response (check credentials and that REST API access is permitted)"
-		exit 4
+		exit 3
 	fi
 
 	fg_api_get() {
@@ -1620,13 +1621,13 @@ else
 
 	if [[ -z "${_sys_buffer}" || ! "${_sys_buffer}" =~ '"results"' ]]; then
 		echo "${status_unkn} - Failed to retrieve system status from ${fg_host} - check host and credentials"
-		exit 4
+		exit 3
 	fi
 
 	_http_status=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r '.http_status // 200' 2>/dev/null)
 	if [[ "${_http_status}" -ge 400 ]] 2>/dev/null; then
 		echo "${status_unkn} - API error ${_http_status} from ${fg_host} - check credentials and REST API permissions"
-		exit 4
+		exit 3
 	fi
 
 	fg_hostname=$(echo "${_sys_buffer}" | "${JQ}" --unbuffered -r '.results.hostname // "unknown"' 2>/dev/null)
@@ -1866,7 +1867,7 @@ fi
 # Optional: validate hostname matches expected
 if [[ -n "${hostname_filter}" && "${fg_hostname}" != "${hostname_filter}" ]]; then
 	echo "${status_unkn} - Connected hostname '${fg_hostname}' does not match expected '${hostname_filter}'"
-	exit 4
+	exit 3
 fi
 
 # Output hostname prefixes — all empty by default; set with --append-fw-name
