@@ -91,6 +91,7 @@
 #                    "connected"/"authorized" (<=7.0)
 # 2.10.8 2026-11-21  Fix -eSW ifs
 # 2.10.9 2026-11-24  Added per-SSID Client count in perfdata
+# 2.10.10 2026-11-25 Fix exit codes
 
 ## VARIABLES
 PROGNAME="${0##*/}"
